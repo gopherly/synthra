@@ -1,0 +1,3 @@
+service:
+  name: "edge"
+  port: 8080
