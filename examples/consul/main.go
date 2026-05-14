@@ -14,7 +14,7 @@
 
 // Package main loads local YAML, optionally merges Consul KV, then env.
 //
-// When CONSUL_HTTP_ADDR is unset, WithConsulOptional adds no source
+// When CONSUL_HTTP_ADDR is unset, WithIf adds no Consul source
 // and the program still runs using file + environment only.
 package main
 
@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"gopherly.dev/synthra"
 )
@@ -29,7 +30,7 @@ import (
 func main() {
 	cfg := synthra.MustNew(
 		synthra.WithFile("config.yaml"),
-		synthra.WithConsulOptional("synthra/example/config.yaml"),
+		synthra.WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "", synthra.WithConsul("synthra/example/config.yaml")),
 		synthra.WithEnv("EDGE_"),
 	)
 

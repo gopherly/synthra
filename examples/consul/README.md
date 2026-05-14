@@ -2,7 +2,7 @@
 
 This program always loads `config.yaml`, then **optionally** loads a YAML value from Consul when `CONSUL_HTTP_ADDR` is set, then applies `EDGE_*` environment variables (highest precedence).
 
-Without Consul, `WithConsulOptional` is a no-op:
+Without Consul, wrapping Consul with `WithIf` makes it a no-op:
 
 ```bash
 cd examples/consul && go run .
@@ -16,7 +16,7 @@ export CONSUL_HTTP_ADDR=http://127.0.0.1:8500
 cd examples/consul && go run .
 ```
 
-Example `docker compose` for a local Consul agent is left to your infrastructure; the client only needs `CONSUL_HTTP_ADDR` as documented in [synthra.WithConsulOptional](https://pkg.go.dev/gopherly.dev/synthra#WithConsulOptional).
+Example `docker compose` for a local Consul agent is left to your infrastructure; the client only needs `CONSUL_HTTP_ADDR` as documented in [synthra.WithConsul](https://pkg.go.dev/gopherly.dev/synthra#WithConsul), used conditionally with `WithIf`.
 
 Tests (no live Consul required):
 

@@ -89,6 +89,29 @@ func WithSource(loader Source) Option {
 	}
 }
 
+// WithIf returns an Option that applies the provided options only when
+// condition is true.
+// When condition is false, this option is a no-op.
+//
+// Example:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "",
+//	        synthra.WithConsul("production/service.yaml"),
+//	    ),
+//	)
+func WithIf(condition bool, opts ...Option) Option {
+	return func(cfg *config) {
+		if !condition {
+			return
+		}
+		for _, opt := range opts {
+			opt(cfg)
+		}
+	}
+}
+
 // WithFileDumper returns an Option that configures the Synthra instance
 // to dump configuration data to a file.
 // The format is automatically detected from the file extension (.yaml,
@@ -232,8 +255,8 @@ func WithEnv(prefix string) Option {
 //
 // CONSUL_HTTP_ADDR is required. If it is not set, New/MustNew returns a
 // validation error at construction.
-// For optional Consul (e.g., development without Consul), use
-// WithConsulOptional instead.
+// For conditional Consul (e.g., development without Consul), wrap this
+// option with WithIf.
 //
 // Paths support environment variable expansion using ${VAR} or $VAR syntax.
 // Example: "${APP_ENV}/service.yaml" expands to "production/service.yaml"
@@ -252,26 +275,12 @@ func WithEnv(prefix string) Option {
 //	)
 func WithConsul(path string) Option {
 	return func(cfg *config) {
-		if os.Getenv("CONSUL_HTTP_ADDR") == "" {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsul", errors.New("CONSUL_HTTP_ADDR is not set")))
-			return
-		}
-
-		path = os.ExpandEnv(path)
-
 		c, err := detectFormat(path)
 		if err != nil {
 			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsul", err))
 			return
 		}
-
-		l, err := source.NewConsul(path, c, nil)
-		if err != nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsul", err))
-			return
-		}
-
-		cfg.sources = append(cfg.sources, l)
+		addConsulSource(cfg, "WithConsul", path, c)
 	}
 }
 
@@ -303,8 +312,8 @@ func WithFileAs(path string, decoder codec.Decoder) Option {
 //
 // CONSUL_HTTP_ADDR is required. If it is not set, New/MustNew returns a
 // validation error at construction.
-// For optional Consul (e.g., development without Consul), use
-// WithConsulAsOptional instead.
+// For conditional Consul (e.g., development without Consul), wrap this
+// option with WithIf.
 //
 // Paths support environment variable expansion using ${VAR} or $VAR syntax.
 // Example: "${APP_ENV}/service" expands to "production/service" when
@@ -323,93 +332,25 @@ func WithFileAs(path string, decoder codec.Decoder) Option {
 //	)
 func WithConsulAs(path string, decoder codec.Decoder) Option {
 	return func(cfg *config) {
-		if os.Getenv("CONSUL_HTTP_ADDR") == "" {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsulAs", errors.New("CONSUL_HTTP_ADDR is not set")))
-			return
-		}
-
-		path = os.ExpandEnv(path)
-
-		l, err := source.NewConsul(path, decoder, nil)
-		if err != nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsulAs", err))
-			return
-		}
-
-		cfg.sources = append(cfg.sources, l)
+		addConsulSource(cfg, "WithConsulAs", path, decoder)
 	}
 }
 
-// WithConsulOptional returns an Option that adds a Consul source only when
-// CONSUL_HTTP_ADDR is set.
-// If CONSUL_HTTP_ADDR is not set, this option is a no-op (no source
-// added, no error).
-// Use this for development without Consul; use WithConsul when Consul is
-// required and should fail at construction if env is missing.
-//
-// The format is automatically detected from the path extension. Paths
-// support environment variable expansion (${VAR} or $VAR).
-//
-// Example:
-//
-//	cfg := synthra.MustNew(
-//	    synthra.WithFile("config.yaml"),
-//	    synthra.WithConsulOptional("production/service.yaml"),  // No-op when CONSUL_HTTP_ADDR is unset
-//	)
-func WithConsulOptional(path string) Option {
-	return func(cfg *config) {
-		if os.Getenv("CONSUL_HTTP_ADDR") == "" {
-			return
-		}
-
-		path = os.ExpandEnv(path)
-
-		c, err := detectFormat(path)
-		if err != nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsulOptional", err))
-			return
-		}
-
-		l, err := source.NewConsul(path, c, nil)
-		if err != nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsulOptional", err))
-			return
-		}
-
-		cfg.sources = append(cfg.sources, l)
+func addConsulSource(cfg *config, opName, path string, decoder codec.Decoder) {
+	if os.Getenv("CONSUL_HTTP_ADDR") == "" {
+		cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, opName, errors.New("CONSUL_HTTP_ADDR is not set")))
+		return
 	}
-}
 
-// WithConsulAsOptional returns an Option that adds a Consul source with
-// explicit decoder only when CONSUL_HTTP_ADDR is set.
-// If CONSUL_HTTP_ADDR is not set, this option is a no-op (no source
-// added, no error).
-// Use this for development without Consul; use WithConsulAs when Consul
-// is required and should fail at construction if env is missing.
-//
-// Paths support environment variable expansion (${VAR} or $VAR).
-//
-// Example:
-//
-//	cfg := synthra.MustNew(
-//	    synthra.WithConsulAsOptional("production/service", codec.JSON()),
-//	)
-func WithConsulAsOptional(path string, decoder codec.Decoder) Option {
-	return func(cfg *config) {
-		if os.Getenv("CONSUL_HTTP_ADDR") == "" {
-			return
-		}
+	path = os.ExpandEnv(path)
 
-		path = os.ExpandEnv(path)
-
-		l, err := source.NewConsul(path, decoder, nil)
-		if err != nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithConsulAsOptional", err))
-			return
-		}
-
-		cfg.sources = append(cfg.sources, l)
+	l, err := source.NewConsul(path, decoder, nil)
+	if err != nil {
+		cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, opName, err))
+		return
 	}
+
+	cfg.sources = append(cfg.sources, l)
 }
 
 // WithContent returns an Option that configures the Synthra instance to

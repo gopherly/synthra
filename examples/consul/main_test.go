@@ -16,18 +16,19 @@ package main
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"gopherly.dev/synthra"
 )
 
-func TestConsulOptional_FileAndEnvWithoutConsul(t *testing.T) {
+func TestConsulWithIf_FileAndEnvWithoutConsul(t *testing.T) {
 	t.Setenv("EDGE_SERVICE_PORT", "9090")
 
 	cfg := synthra.MustNew(
 		synthra.WithFile("config.yaml"),
-		synthra.WithConsulOptional("synthra/example/config.yaml"),
+		synthra.WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "", synthra.WithConsul("synthra/example/config.yaml")),
 		synthra.WithEnv("EDGE_"),
 	)
 	require.NoError(t, cfg.Load(context.Background()))

@@ -1700,22 +1700,29 @@ func TestWithConsulAs_RequiresEnvVar(t *testing.T) {
 	assert.Contains(t, err.Error(), "CONSUL_HTTP_ADDR")
 }
 
-func TestWithConsulOptional_SkipsWithoutEnvVar(t *testing.T) {
+func TestWithIf_WithConsul_SkipsWithoutEnvVar(t *testing.T) {
 	t.Setenv("CONSUL_HTTP_ADDR", "")
 
-	cfg, err := New(WithConsulOptional("production/service.yaml"))
+	cfg, err := New(WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "", WithConsul("production/service.yaml")))
 	require.NoError(t, err)
 	assert.NotNil(t, cfg)
 	assert.Len(t, cfg.sources, 0)
 }
 
-func TestWithConsulAsOptional_SkipsWithoutEnvVar(t *testing.T) {
+func TestWithIf_WithConsulAs_SkipsWithoutEnvVar(t *testing.T) {
 	t.Setenv("CONSUL_HTTP_ADDR", "")
 
-	cfg, err := New(WithConsulAsOptional("production/service", codec.JSON))
+	cfg, err := New(WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "", WithConsulAs("production/service", codec.JSON)))
 	require.NoError(t, err)
 	assert.NotNil(t, cfg)
 	assert.Len(t, cfg.sources, 0)
+}
+
+func TestWithIf_AppliesWhenConditionTrue(t *testing.T) {
+	cfg, err := New(WithIf(true, WithSource(source.NewMap(map[string]any{"service": map[string]any{"name": "edge"}}))))
+	require.NoError(t, err)
+	assert.NotNil(t, cfg)
+	assert.Len(t, cfg.sources, 1)
 }
 
 func TestWithFile_ExpandsEnvVars(t *testing.T) {
@@ -2246,13 +2253,203 @@ func TestConsistentReturnTypes(t *testing.T) {
 	})
 }
 
-// mockSlowSource simulates a slow configuration source
-type mockSlowSource struct {
-	conf  map[string]any
-	delay time.Duration
+func TestCaseInsensitiveMerging(t *testing.T) {
+	t.Parallel()
+
+	// Test data with mixed case keys
+	config1 := []byte(`{
+		"Server": {
+			"Host": "localhost",
+			"Port": 8080
+		},
+		"Database": {
+			"Name": "testdb"
+		}
+	}`)
+
+	config2 := []byte(`{
+		"server": {
+			"host": "example.com",
+			"port": 9090
+		},
+		"database": {
+			"name": "prod"
+		}
+	}`)
+
+	// Create configuration with both sources
+	cfg, err := New(
+		WithContent(config1, codec.JSON),
+		WithContent(config2, codec.JSON),
+	)
+	require.NoError(t, err)
+
+	// Load configuration
+	err = cfg.Load(context.Background())
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		key     string
+		wantStr string
+		wantInt int
+		getType string // "string" or "int"
+	}{
+		{
+			name:    "server.host lowercase",
+			key:     "server.host",
+			wantStr: "example.com",
+			getType: "string",
+		},
+		{
+			name:    "Server.Host mixed case",
+			key:     "Server.Host",
+			wantStr: "example.com",
+			getType: "string",
+		},
+		{
+			name:    "SERVER.HOST uppercase",
+			key:     "SERVER.HOST",
+			wantStr: "example.com",
+			getType: "string",
+		},
+		{
+			name:    "server.port lowercase",
+			key:     "server.port",
+			wantInt: 9090,
+			getType: "int",
+		},
+		{
+			name:    "Server.Port mixed case",
+			key:     "Server.Port",
+			wantInt: 9090,
+			getType: "int",
+		},
+		{
+			name:    "SERVER.PORT uppercase",
+			key:     "SERVER.PORT",
+			wantInt: 9090,
+			getType: "int",
+		},
+		{
+			name:    "database.name lowercase",
+			key:     "database.name",
+			wantStr: "prod",
+			getType: "string",
+		},
+		{
+			name:    "Database.Name mixed case",
+			key:     "Database.Name",
+			wantStr: "prod",
+			getType: "string",
+		},
+		{
+			name:    "DATABASE.NAME uppercase",
+			key:     "DATABASE.NAME",
+			wantStr: "prod",
+			getType: "string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			switch tt.getType {
+			case "string":
+				got, strErr := cfg.String(tt.key)
+				require.NoError(t, strErr)
+				assert.Equal(t, tt.wantStr, got)
+			case "int":
+				got, intErr := cfg.Int(tt.key)
+				require.NoError(t, intErr)
+				assert.Equal(t, tt.wantInt, got)
+			}
+		})
+	}
 }
 
-func (m *mockSlowSource) Load(_ context.Context) (map[string]any, error) {
-	time.Sleep(m.delay)
-	return m.conf, nil
+func TestNormalizeMapKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    map[string]any
+		expected map[string]any
+	}{
+		{
+			name: "normalizes all keys to lowercase",
+			input: map[string]any{
+				"Server": map[string]any{
+					"Host": "localhost",
+					"Port": 8080,
+				},
+				"Database": map[string]any{
+					"Name": "testdb",
+					"Settings": map[string]any{
+						"MaxConnections": 100,
+					},
+				},
+			},
+			expected: map[string]any{
+				"server": map[string]any{
+					"host": "localhost",
+					"port": 8080,
+				},
+				"database": map[string]any{
+					"name": "testdb",
+					"settings": map[string]any{
+						"maxconnections": 100,
+					},
+				},
+			},
+		},
+		{
+			name: "handles already lowercase keys",
+			input: map[string]any{
+				"server": "localhost",
+				"port":   8080,
+			},
+			expected: map[string]any{
+				"server": "localhost",
+				"port":   8080,
+			},
+		},
+		{
+			name: "handles uppercase keys",
+			input: map[string]any{
+				"SERVER": "localhost",
+				"PORT":   8080,
+			},
+			expected: map[string]any{
+				"server": "localhost",
+				"port":   8080,
+			},
+		},
+		{
+			name: "handles mixed case keys",
+			input: map[string]any{
+				"MyServer": "localhost",
+				"MyPort":   8080,
+			},
+			expected: map[string]any{
+				"myserver": "localhost",
+				"myport":   8080,
+			},
+		},
+		{
+			name:     "handles empty map",
+			input:    map[string]any{},
+			expected: map[string]any{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			normalized := normalizeMapKeys(tt.input)
+			assert.Equal(t, tt.expected, normalized)
+		})
+	}
 }

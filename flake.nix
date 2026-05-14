@@ -53,7 +53,17 @@
             description,
             tags,
             coverProfile,
+            # With -tags=integration only the module root has *_test.go; listing ./... still
+            # selects child packages with no tests and triggers Nix Go covdata failures under -coverpkg.
+            integrationTestsAtModuleRoot ? false,
           }:
+          let
+            goListCmd =
+              if integrationTestsAtModuleRoot then
+                ''"$go" list -tags=${tags} .''
+              else
+                ''"$go" list -tags=${tags} ./...'';
+          in
           mkApp {
             inherit name description;
             script = ''
@@ -61,9 +71,9 @@
               # them in one -coverpkg=./... run triggers "no such tool covdata" in CI.
               export GOTOOLCHAIN=local
               go="${pkgs.go}/bin/go"
-              mapfile -t testpkgs < <("$go" list -tags=${tags} ./... | grep -vE '/examples(/|$)' || true)
+              mapfile -t testpkgs < <(${goListCmd} | grep -vE '/examples(/|$)' || true)
               if [ ''${#testpkgs[@]} -eq 0 ]; then
-                echo "go list: no packages after excluding examples/" >&2
+                echo "go list: no test packages after filters (tags=${tags})" >&2
                 exit 1
               fi
               exec "$go" test -tags=${tags} -race -shuffle=on -covermode=atomic \
@@ -82,6 +92,7 @@
             };
             markdownlint = {
               enable = true;
+              excludes = [ "node_modules" ];
               settings.configuration = builtins.fromJSON (builtins.readFile ./.markdownlint.json);
             };
             go-mod-tidy = {
@@ -91,6 +102,7 @@
               files = "(\\.go|go\\.mod|go\\.sum)$";
               pass_filenames = false;
             };
+            nixfmt.enable = true;
           };
         };
       in
@@ -154,14 +166,6 @@
             '';
           };
 
-          lint-gomod = mkApp {
-            name = "lint-gomod";
-            description = "Run golangci-lint gomoddirectives on go.mod (CI hygiene)";
-            script = ''
-              exec ${pkgs.golangci-lint}/bin/golangci-lint run -c .golangci-gomod.yaml ./...
-            '';
-          };
-
           lint-md = mkApp {
             name = "lint-md";
             description = "Lint Markdown files with markdownlint";
@@ -182,6 +186,7 @@
             description = "Run integration tests with race detector; write coverage-integration.out (build tag integration)";
             tags = "integration";
             coverProfile = "coverage-integration.out";
+            integrationTestsAtModuleRoot = true;
           };
         };
       }

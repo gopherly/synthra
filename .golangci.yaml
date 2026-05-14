@@ -14,7 +14,6 @@
 
 # golangci-lint configuration (HARD/REQUIRED checks)
 # This config contains only critical linters that must pass.
-# For optional quality checks, see .golangci-soft.yaml
 version: "2"
 
 linters:
@@ -122,6 +121,9 @@ linters:
     - modernize
 
     # === HYGIENE / CONSISTENCY ===
+    # gomoddirectives: go.mod directive hygiene (replace, retract, toolchain, etc.).
+    - gomoddirectives
+
     # nolintlint: Ill-formed //nolint directives; keeps suppressions specific and effective.
     - nolintlint
 
@@ -184,6 +186,11 @@ linters:
       severity: medium
       # Filter by confidence (low, medium, high)
       confidence: medium
+
+    gomoddirectives:
+      replace-local: false
+      retract-allow-no-explanation: false
+      check-module-path: true
 
     govet:
       enable:

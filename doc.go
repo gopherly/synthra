@@ -97,10 +97,11 @@
 //
 //	synthra.WithConsul("production/service.yaml")
 //
-// Optional Consul (no-op when CONSUL_HTTP_ADDR is unset, e.g. for local dev):
+// Conditional Consul (e.g. for local dev without Consul):
 //
-//	synthra.WithConsulOptional("production/service.yaml")
-//	synthra.WithConsulAsOptional("production/service", codec.JSON())
+//	synthra.WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "",
+//	    synthra.WithConsul("production/service.yaml"),
+//	)
 //
 // Raw content:
 //

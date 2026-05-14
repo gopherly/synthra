@@ -14,7 +14,7 @@ Runnable programs under this directory complement the shorter snippets in [examp
 | [dump](./dump/) | `WithFileDumperAs` + `Dump` of merged state |
 | [defaults](./defaults/) | `WithContent` defaults, then file, then env |
 | [formats](./formats/) | `WithFileAs` with JSON + TOML |
-| [consul](./consul/) | `WithConsulOptional` (no Consul required for tests) |
+| [consul](./consul/) | `WithIf(..., WithConsul(...))` (no Consul required for tests) |
 | [testing](./testing/) | `synthratest.Config` + `source.NewMap` in tests |
 
 ## Quick start

@@ -1,14 +1,50 @@
 # Synthra
 
-**From many sources, one state.**
+[![CI](https://github.com/gopherly/synthra/actions/workflows/ci.yml/badge.svg)](https://github.com/gopherly/synthra/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/gopherly/synthra/branch/main/graph/badge.svg)](https://codecov.io/gh/gopherly/synthra)
+[![Go Reference](https://pkg.go.dev/badge/gopherly.dev/synthra.svg)](https://pkg.go.dev/gopherly.dev/synthra)
+[![Go Report Card](https://goreportcard.com/badge/gopherly.dev/synthra)](https://goreportcard.com/report/gopherly.dev/synthra)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Synthra is a Go library that builds one configuration from many places. It reads from files, environment variables, Consul, in-memory bytes, and any custom source. It merges them in order, validates the result, and binds it to a struct if you want. The name comes from σύνθεσις (*synthesis*), which means "to put together into a whole".
+**From many sources, one config.**
+
+Synthra is a Go library that builds one configuration from many places. It reads from files, environment variables, Consul, in-memory bytes, and any custom source. It merges them in order, validates the result, and binds it to a struct if you want. The name comes from the Greek word *synthesis*, which means "to put together."
 
 ```bash
 go get gopherly.dev/synthra
 ```
 
-API documentation: [pkg.go.dev/gopherly.dev/synthra](https://pkg.go.dev/gopherly.dev/synthra)
+Requires Go 1.26 or later.
+
+```go
+import "gopherly.dev/synthra"
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+    S1[File] --> Merge
+    S2[Env] --> Merge
+    S3[Consul] --> Merge
+    S4[Custom] --> Merge
+    Merge --> Validate
+    Validate --> Bind["Bind to struct"]
+    Bind --> Ready["Synthra ready"]
+    Ready --> Read["Get / String / Int / ..."]
+    Ready --> Dump["Dump to file"]
+
+    style S1 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    style S2 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    style S3 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    style S4 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    style Merge fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Validate fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Bind fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Ready fill:#d1fae5,stroke:#10b981,color:#064e3b
+    style Read fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
+    style Dump fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
+```
 
 ## Why Synthra
 
@@ -20,28 +56,30 @@ Most Go services load configuration from more than one place. A YAML file holds 
 - Struct binding with type conversion, default values, and validation.
 - Case-insensitive keys with dot notation (`server.port`).
 - Safe for use from many goroutines at the same time.
-- Small core, optional extras. The Consul source is the only heavy dependency, and it is only loaded if you import it through the option.
+- Small core, optional extras. Consul is the only heavy dependency; it ships with the module, but you only interact with it if you call `WithConsul` (optionally wrapped with `WithIf`).
 - A `synthratest` helper package for tests.
 
 ## Contents
 
-1. [Quick start](#quick-start)
-2. [Sources](#sources)
-3. [Formats](#formats)
-4. [Struct binding](#struct-binding)
-5. [Default values](#default-values)
-6. [Validation](#validation)
-7. [Reading values](#reading-values)
-8. [Merge order and precedence](#merge-order-and-precedence)
-9. [Case insensitivity and dot notation](#case-insensitivity-and-dot-notation)
-10. [Environment variable naming](#environment-variable-naming)
-11. [Dumping configuration](#dumping-configuration)
-12. [Testing helpers](#testing-helpers)
-13. [Custom sources and codecs](#custom-sources-and-codecs)
-14. [Error handling](#error-handling)
-15. [Thread safety](#thread-safety)
-16. [Examples](#examples)
-17. [License](#license)
+1. [How it works](#how-it-works)
+2. [Quick start](#quick-start)
+3. [Sources](#sources)
+4. [Formats](#formats)
+5. [Struct binding](#struct-binding)
+6. [Default values](#default-values)
+7. [Validation](#validation)
+8. [Reading values](#reading-values)
+9. [Merge order and precedence](#merge-order-and-precedence)
+10. [Case insensitivity and dot notation](#case-insensitivity-and-dot-notation)
+11. [Environment variable naming](#environment-variable-naming)
+12. [Dumping configuration](#dumping-configuration)
+13. [Testing helpers](#testing-helpers)
+14. [Custom sources and codecs](#custom-sources-and-codecs)
+15. [Error handling](#error-handling)
+16. [Thread safety](#thread-safety)
+17. [Examples](#examples)
+18. [License](#license)
+19. [Contributing](#contributing)
 
 ## Quick start
 
@@ -97,7 +135,7 @@ Set `APP_SERVER_PORT=9090` to override the YAML port at runtime.
 
 ## Sources
 
-A *source* is anything that returns a `map[string]any`. Synthra ships several built-in sources.
+A source is any type whose `Load` method returns a `map[string]any`. Synthra ships several built-in sources.
 
 ### File with automatic format detection
 
@@ -179,13 +217,24 @@ Reads a key from Consul and decodes the value. The format is detected from the p
 synthra.WithConsul("production/service.yaml")
 ```
 
-`CONSUL_HTTP_ADDR` must be set. If it is missing, `New` returns an error at construction. For dev setups where Consul may not run, use the optional variant:
+`CONSUL_HTTP_ADDR` must be set. If it is missing, `New` returns an error at construction. For dev setups where Consul may not run, gate it with `WithIf`:
 
 ```go
-synthra.WithConsulOptional("production/service.yaml")
+synthra.WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "",
+    synthra.WithConsul("production/service.yaml"),
+)
 ```
 
-This option does nothing when `CONSUL_HTTP_ADDR` is not set. The token, if any, comes from `CONSUL_HTTP_TOKEN`.
+This pattern does nothing when `CONSUL_HTTP_ADDR` is not set. The token, if any, comes from `CONSUL_HTTP_TOKEN`.
+
+Use `WithConsulAs` when the path has no extension, or when the extension does not match the format:
+
+```go
+synthra.WithConsulAs("production/service", codec.JSON)
+synthra.WithIf(os.Getenv("CONSUL_HTTP_ADDR") != "",
+    synthra.WithConsulAs("production/service", codec.JSON),
+)
+```
 
 ### Custom source
 
@@ -400,6 +449,8 @@ timeout := s.DurationOr("timeout", 30*time.Second)
 tags := s.StringSliceOr("tags", []string{"default"})
 ```
 
+Other Or methods exist for `Int64`, `Float64`, `Time`, `IntSlice`, and `StringMap`. See the [API docs](https://pkg.go.dev/gopherly.dev/synthra) for the full list.
+
 ### Generic `Get` and `GetOr`
 
 For type-safe access with one function, use the generic helpers:
@@ -419,10 +470,10 @@ The type comes from the type parameter, or from the default value.
 v := s.Get("server.port")  // any
 ```
 
-`Values()` returns a shallow copy of the merged map. Treat it as read-only.
+`Values()` returns a pointer to a shallow copy of the merged map. Treat it as read-only.
 
 ```go
-all := s.Values()
+all := s.Values() // *map[string]any
 ```
 
 ## Merge order and precedence
@@ -450,7 +501,7 @@ s.Int("Server.Port")  // also works
 s.Int("SERVER.PORT")  // also works
 ```
 
-Keys use dot notation: `server.port` walks into `server` and reads `port`. A key that contains a dot literal is not supported. If you store such keys, read them through `Values()`.
+Keys use dot notation: `server.port` walks into `server` and reads `port`. A key with a real dot in its name (not used as a separator) is not supported. If you store such keys, read them through `Values()`.
 
 ## Environment variable naming
 
@@ -528,7 +579,9 @@ Highlights:
 - `synthratest.Config(t, opts...)`: build a `*Synthra` without calling `Load`.
 - `synthratest.Load(t, map, opts...)`: build and load with a map source.
 - `synthratest.LoadFile(t, format, content)`: write a temp file and load it.
+- `synthratest.WriteFile(t, format, content)`: write a temp config file and return its path.
 - `synthratest.Dumper`: a recording dumper for tests.
+- `synthratest.FuncCodec`: a codec test double with function fields for `Decode` and `Encode`.
 - `synthratest.ErrSource(err)`: a source that always returns the given error.
 - `synthratest.AssertString`, `AssertInt`, `AssertBool`, `AssertStringSlice`, `AssertDumped`: shortcut assertions.
 
@@ -644,3 +697,13 @@ go test ./examples/...
 ## License
 
 Synthra is released under the [Apache License 2.0](./LICENSE).
+
+## Contributing
+
+Contributions are welcome. Please open an issue first to discuss larger changes before sending a pull request.
+
+This project uses Nix for development. Run `nix develop` to enter the shell, then:
+
+- `nix run .#lint` to run the linter.
+- `nix run .#test-unit` to run unit tests.
+- `nix run .#fmt-check` to check formatting.
