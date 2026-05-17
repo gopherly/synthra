@@ -34,6 +34,12 @@
 //   - Multiple configuration sources (files, [io/fs.FS], environment variables,
 //     Consul)
 //   - Automatic format detection and decoding (JSON, YAML, TOML)
+//   - JSON Schema defaults: "default" values declared in the schema are
+//     automatically applied to missing keys, including patternProperties
+//   - Dynamic schema selection ([WithJSONSchemaSelector]) for version-based or
+//     content-based schema routing at Load time
+//   - Post-load transforms ([WithTransform]) and string interpolation
+//     ([WithInterpolation]) run before validation
 //   - Struct binding with automatic type conversion
 //   - Validation using JSON Schema or custom validators
 //   - Case-insensitive key access with dot notation
@@ -147,18 +153,66 @@
 //	    return nil
 //	}
 //
-// Validate using JSON Schema:
+// Validate using JSON Schema (also applies "default" values automatically):
 //
 //	schema := []byte(`{
 //	    "type": "object",
 //	    "properties": {
-//	        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+//	        "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 8080}
 //	    },
 //	    "required": ["port"]
 //	}`)
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
+//	    synthra.WithJSONSchema(schema), // validates AND fills in "default" values
+//	)
+//	// If config.yaml omits "port", Load sets it to 8080 before validating.
+//
+// Use [WithJSONSchemaSelector] when the schema to use depends on a value inside
+// the config itself — for example an apiVersion field:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("manifest.yaml"),
+//	    synthra.WithJSONSchemaSelector(func(values map[string]any) ([]byte, error) {
+//	        version, ok := values["apiversion"].(string)
+//	        if !ok || version == "" {
+//	            return nil, errors.New("apiVersion is required")
+//	        }
+//	        return schemaRegistry.Get(version)
+//	    }),
+//	)
+//	// The selector is called at Load time with the merged values, so it can
+//	// branch on any config value. The selected schema applies defaults and
+//	// validates exactly like WithJSONSchema. WithJSONSchema and
+//	// WithJSONSchemaSelector are mutually exclusive.
+//
+// # Transforms and Interpolation
+//
+// [WithTransform] registers a function that processes the merged values after
+// schema defaults and before validation. Multiple transforms run as a pipeline.
+// [WithInterpolation] is a convenience transform that replaces {key} placeholders
+// in string values with entries from a provided map:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithJSONSchema(schema),
+//	    synthra.WithInterpolation(map[string]string{
+//	        "env":    "production",
+//	        "region": "eu-west-1",
+//	    }),
+//	)
+//	// If config.yaml has: envFile: ".env.{env}"
+//	// After Load: cfg.Get("envFile") => ".env.production"
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithTransform(func(values map[string]any) (map[string]any, error) {
+//	        if level, ok := values["log_level"].(string); ok {
+//	            values["log_level"] = strings.ToLower(level)
+//	        }
+//	        return values, nil
+//	    }),
 //	    synthra.WithJSONSchema(schema),
 //	)
 //
@@ -301,6 +355,7 @@
 //   - examples/environment — environment-only configuration
 //   - examples/webapp — layered YAML + env, binding, and Validate
 //   - examples/jsonschema — JSON Schema validation
+//   - examples/jsonschema-defaults — JSON Schema defaults and WithInterpolation
 //   - examples/customvalidator — custom validation functions
 //   - examples/dump — configuration dumping
 //   - examples/consul — optional Consul integration

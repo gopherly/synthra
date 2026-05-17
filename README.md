@@ -54,6 +54,9 @@ Most Go services load configuration from more than one place. A YAML file holds 
 - Clear merge order: later sources win over earlier ones.
 - Twelve-Factor friendly environment support with clear source precedence, so config can move cleanly across environments.
 - Format detection from the file extension (`.yaml`, `.yml`, `.json`, `.toml`).
+- JSON Schema defaults applied automatically: any `"default"` declared in the schema fills missing keys, including `patternProperties` defaults for dynamic key names.
+- Dynamic schema selection (`WithJSONSchemaSelector`): choose the schema at Load time based on a value read from the config itself (e.g. `apiVersion`), no two-pass workaround needed.
+- Post-load transforms (`WithTransform`) and string interpolation (`WithInterpolation`) run before validation.
 - Struct binding with type conversion, default values, and validation.
 - Case-insensitive keys with dot notation (`server.port`).
 - Safe for use from many goroutines at the same time.
@@ -68,19 +71,22 @@ Most Go services load configuration from more than one place. A YAML file holds 
 4. [Formats](#formats)
 5. [Struct binding](#struct-binding)
 6. [Default values](#default-values)
-7. [Validation](#validation)
-8. [Reading values](#reading-values)
-9. [Merge order and precedence](#merge-order-and-precedence)
-10. [Case insensitivity and dot notation](#case-insensitivity-and-dot-notation)
-11. [Environment variable naming](#environment-variable-naming)
-12. [Dumping configuration](#dumping-configuration)
-13. [Testing helpers](#testing-helpers)
-14. [Custom sources and codecs](#custom-sources-and-codecs)
-15. [Error handling](#error-handling)
-16. [Thread safety](#thread-safety)
-17. [Examples](#examples)
-18. [License](#license)
-19. [Contributing](#contributing)
+7. [JSON Schema defaults](#json-schema-defaults)
+8. [Dynamic schema selection](#dynamic-schema-selection)
+9. [Transforms and interpolation](#transforms-and-interpolation)
+10. [Validation](#validation)
+11. [Reading values](#reading-values)
+12. [Merge order and precedence](#merge-order-and-precedence)
+13. [Case insensitivity and dot notation](#case-insensitivity-and-dot-notation)
+14. [Environment variable naming](#environment-variable-naming)
+15. [Dumping configuration](#dumping-configuration)
+16. [Testing helpers](#testing-helpers)
+17. [Custom sources and codecs](#custom-sources-and-codecs)
+18. [Error handling](#error-handling)
+19. [Thread safety](#thread-safety)
+20. [Examples](#examples)
+21. [License](#license)
+22. [Contributing](#contributing)
 
 ## Quick start
 
@@ -348,6 +354,116 @@ synthra.MustNew(
 )
 ```
 
+## JSON Schema defaults
+
+When you pass a schema with `WithJSONSchema`, Synthra automatically extracts every `"default"` value declared in the schema and applies it to any key that is missing from the loaded configuration. This happens after sources are merged and before validation runs, so the schema validator always sees a fully populated map.
+
+```go
+schema := []byte(`{
+    "type": "object",
+    "properties": {
+        "port":      {"type": "integer", "default": 8080},
+        "log_level": {"type": "string",  "default": "info",
+                      "enum": ["debug", "info", "warn", "error"]}
+    }
+}`)
+
+s := synthra.MustNew(
+    synthra.WithFile("config.yaml"),
+    synthra.WithJSONSchema(schema),
+)
+// If config.yaml omits "port" and "log_level", they are set to 8080 and "info"
+// before validation. Values present in config.yaml are never overridden.
+```
+
+Defaults are applied at every level of nesting, including `patternProperties`. For dynamic key names (e.g. a map of named components), Synthra applies the `patternProperties` defaults to every existing key that matches the pattern:
+
+```go
+schema := []byte(`{
+    "properties": {
+        "components": {
+            "patternProperties": {
+                "^[a-z0-9-]+$": {
+                    "properties": {
+                        "role":     {"type": "string",  "default": "service"},
+                        "replicas": {"type": "integer", "default": 1}
+                    }
+                }
+            }
+        }
+    }
+}`)
+
+// config.yaml:
+//   components:
+//     web:
+//       image: nginx
+//     worker:
+//       image: my-app
+//       replicas: 3
+//
+// After Load:
+//   components.web.role     => "service"  (from schema default)
+//   components.web.replicas => 1          (from schema default)
+//   components.worker.role  => "service"  (from schema default)
+//   components.worker.replicas => 3       (from config.yaml, not overridden)
+```
+
+### Dynamic schema selection
+
+Use `WithJSONSchemaSelector` when the right schema depends on a value inside the config itself — the most common case being an `apiVersion` field. The selector is a callback that receives the merged values at Load time and returns the schema bytes to use:
+
+```go
+cfg := synthra.MustNew(
+    synthra.WithFile("manifest.yaml"),
+    synthra.WithJSONSchemaSelector(func(values map[string]any) ([]byte, error) {
+        version, ok := values["apiversion"].(string)
+        if !ok || version == "" {
+            return nil, errors.New("apiVersion is required")
+        }
+        return schemaRegistry.Get(version)  // your own lookup
+    }),
+)
+```
+
+The selector runs after sources are merged and before schema defaults, transforms, and validation — so the selected schema drives the whole pipeline exactly as if `WithJSONSchema` had been used.
+
+`WithJSONSchema` and `WithJSONSchemaSelector` are mutually exclusive; using both in one `New` call is a construction-time error.
+
+## Transforms and interpolation
+
+`WithTransform` registers a function that processes the merged configuration map after schema defaults and before validation. Multiple transforms run as a pipeline in registration order.
+
+```go
+s := synthra.MustNew(
+    synthra.WithFile("config.yaml"),
+    synthra.WithTransform(func(values map[string]any) (map[string]any, error) {
+        if level, ok := values["log_level"].(string); ok {
+            values["log_level"] = strings.ToLower(level)
+        }
+        return values, nil
+    }),
+    synthra.WithJSONSchema(schema), // sees the transformed values
+)
+```
+
+`WithInterpolation` is a convenience transform that replaces `{key}` placeholders in all string values with entries from a provided map. Unmatched placeholders are left as-is.
+
+```go
+s := synthra.MustNew(
+    synthra.WithFile("config.yaml"),
+    synthra.WithJSONSchema(schema),
+    synthra.WithInterpolation(map[string]string{
+        "env":    "production",
+        "region": "eu-west-1",
+    }),
+)
+// If config.yaml has: envFile: ".env.{env}"
+// After Load:         envFile => ".env.production"
+```
+
+Interpolation also works with `patternProperties` defaults. If the schema default for a field is `".env.{name}"`, the interpolation transform substitutes `{name}` after the default is applied.
+
 ## Validation
 
 Synthra supports three ways to validate, and you can combine them.
@@ -371,7 +487,7 @@ func (c *Config) Validate() error {
 
 ### 2. JSON Schema
 
-Pass a schema as raw bytes. Synthra validates the merged map before binding.
+Pass a schema as raw bytes. Synthra fills in `"default"` values, then validates the merged map before binding.
 
 ```go
 schema := []byte(`{
@@ -379,7 +495,7 @@ schema := []byte(`{
     "required": ["service", "port"],
     "properties": {
         "service": {"type": "string", "minLength": 1},
-        "port":    {"type": "integer", "minimum": 1, "maximum": 65535}
+        "port":    {"type": "integer", "minimum": 1, "maximum": 65535, "default": 8080}
     }
 }`)
 
@@ -389,7 +505,7 @@ s := synthra.MustNew(
 )
 ```
 
-Synthra supports JSON Schema Draft 4, Draft 6, Draft 7, Draft 2019-09, and Draft 2020-12.
+Synthra supports JSON Schema Draft 4, Draft 6, Draft 7, Draft 2019-09, and Draft 2020-12. See [JSON Schema defaults](#json-schema-defaults) for details on default application.
 
 ### 3. Custom validator function
 
@@ -686,6 +802,7 @@ The [`examples/`](./examples) folder has small, runnable programs. Each one has 
 | [`formats`](./examples/formats) | JSON and TOML with explicit codecs |
 | [`defaults`](./examples/defaults) | Baked-in defaults, then file, then env |
 | [`jsonschema`](./examples/jsonschema) | JSON Schema validation |
+| [`jsonschema-defaults`](./examples/jsonschema-defaults) | JSON Schema defaults and `WithInterpolation` |
 | [`customvalidator`](./examples/customvalidator) | Cross-field check with `WithValidator` |
 | [`dump`](./examples/dump) | Writing the merged state to a file |
 | [`consul`](./examples/consul) | Optional Consul source for dev and prod |
