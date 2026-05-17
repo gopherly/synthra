@@ -148,6 +148,101 @@ func TestWithTransform_NilReturnTreatedAsEmpty(t *testing.T) {
 	require.NoError(t, cfg.Load(context.Background()))
 }
 
+func TestWithTransform_AddsNewKey(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"host": "example.com",
+			"port": "443",
+		})),
+		WithTransform(func(values map[string]any) (map[string]any, error) {
+			host, ok := values["host"].(string)
+			if !ok {
+				return nil, errors.New("host is not a string")
+			}
+			port, ok := values["port"].(string)
+			if !ok {
+				return nil, errors.New("port is not a string")
+			}
+			values["address"] = host + ":" + port
+			return values, nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	addr, err := cfg.String("address")
+	require.NoError(t, err)
+	assert.Equal(t, "example.com:443", addr)
+}
+
+func TestWithTransform_RemovesKey(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"keep":   "yes",
+			"remove": "gone",
+		})),
+		WithTransform(func(values map[string]any) (map[string]any, error) {
+			delete(values, "remove")
+			return values, nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	keep, err := cfg.String("keep")
+	require.NoError(t, err)
+	assert.Equal(t, "yes", keep)
+	assert.Nil(t, cfg.Get("remove"))
+}
+
+func TestWithTransform_PipelineSeesAddedKey(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"base": "value",
+		})),
+		WithTransform(func(values map[string]any) (map[string]any, error) {
+			values["derived"] = "from-first"
+			return values, nil
+		}),
+		WithTransform(func(values map[string]any) (map[string]any, error) {
+			if v, ok := values["derived"].(string); ok {
+				values["derived"] = v + "-modified"
+			}
+			return values, nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	derived, err := cfg.String("derived")
+	require.NoError(t, err)
+	assert.Equal(t, "from-first-modified", derived)
+}
+
+func TestWithTransform_EmptySourceMap(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{})),
+		WithTransform(func(values map[string]any) (map[string]any, error) {
+			values["injected"] = "hello"
+			return values, nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	val, err := cfg.String("injected")
+	require.NoError(t, err)
+	assert.Equal(t, "hello", val)
+}
+
 func TestWithTransform_RunsAfterSchemaDefaults(t *testing.T) {
 	t.Parallel()
 

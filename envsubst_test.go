@@ -329,6 +329,227 @@ func TestWithEnvSubst_PosixUppercase(t *testing.T) {
 	assert.Equal(t, "EU-WEST-1", region)
 }
 
+func TestWithEnvSubst_NonStringValuesPassThrough(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"port":    8080,
+			"enabled": true,
+			"ratio":   0.75,
+			"nothing": nil,
+			"name":    "${NAME}",
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{
+			"NAME": "test",
+		})),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	assert.Equal(t, 8080, cfg.Get("port"))
+	assert.Equal(t, true, cfg.Get("enabled"))
+	assert.Equal(t, 0.75, cfg.Get("ratio"))
+	assert.Nil(t, cfg.Get("nothing"))
+
+	name, err := cfg.String("name")
+	require.NoError(t, err)
+	assert.Equal(t, "test", name)
+}
+
+func TestWithEnvSubst_NonStringValuesInSlicePassThrough(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"mixed": []any{42, true, 3.14, nil, "${TAG}"},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{
+			"TAG": "latest",
+		})),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	items := cfg.Get("mixed")
+	slice, ok := items.([]any)
+	require.True(t, ok)
+	require.Len(t, slice, 5)
+	assert.Equal(t, 42, slice[0])
+	assert.Equal(t, true, slice[1])
+	assert.Equal(t, 3.14, slice[2])
+	assert.Nil(t, slice[3])
+	assert.Equal(t, "latest", slice[4])
+}
+
+func TestWithEnvSubst_ErrorInSliceStringElement(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"hosts": []any{"ok.example.com", "${MISSING_SLICE_VAR}"},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+	assert.Contains(t, loadErr.Error(), "MISSING_SLICE_VAR")
+	assert.Contains(t, loadErr.Error(), `key "hosts[1]"`)
+}
+
+func TestWithEnvSubst_ErrorFromNestedMapInSlice(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"items": []any{
+				map[string]any{"dsn": "${MISSING_DSN_VAR}"},
+			},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+	assert.Contains(t, loadErr.Error(), "MISSING_DSN_VAR")
+	assert.Contains(t, loadErr.Error(), `key "items[0].dsn"`)
+}
+
+func TestWithEnvSubst_ErrorFromNestedSliceInSlice(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"matrix": []any{
+				[]any{"${MISSING_MATRIX_VAR}"},
+			},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+	assert.Contains(t, loadErr.Error(), "MISSING_MATRIX_VAR")
+	assert.Contains(t, loadErr.Error(), `key "matrix[0][0]"`)
+}
+
+func TestWithEnvSubst_ErrorFromNestedMapInMap(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"db": map[string]any{
+				"primary": map[string]any{
+					"host": "${MISSING_DB_HOST}",
+				},
+			},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+	assert.Contains(t, loadErr.Error(), "MISSING_DB_HOST")
+	assert.Contains(t, loadErr.Error(), `key "db.primary.host"`)
+}
+
+func TestWithEnvSubst_ErrorFromSliceInMap(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"tags": []any{"${MISSING_TAG_VAR}"},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+	assert.Contains(t, loadErr.Error(), "MISSING_TAG_VAR")
+	assert.Contains(t, loadErr.Error(), `key "tags[0]"`)
+}
+
+func TestWithEnvSubst_ErrorWrappedAsConfigError(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"path": "${MISSING_CFG_ERR_VAR}",
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+
+	var ce *ConfigError
+	require.ErrorAs(t, loadErr, &ce)
+	assert.Equal(t, OpLoad, ce.Op)
+	assert.Equal(t, "transform[0]", ce.Path)
+	assert.Contains(t, ce.Err.Error(), "envsubst:")
+	assert.Contains(t, ce.Err.Error(), `key "path"`)
+	assert.Contains(t, ce.Err.Error(), "MISSING_CFG_ERR_VAR")
+}
+
+func TestWithEnvSubst_ErrorIndexWhenCombinedWithTransform(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"host": "${MISSING_COMBINED_VAR}",
+		})),
+		WithTransform(func(values map[string]any) (map[string]any, error) {
+			return values, nil
+		}),
+		WithEnvSubst(resolve.Vars(map[string]string{})),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+
+	var ce *ConfigError
+	require.ErrorAs(t, loadErr, &ce)
+	assert.Equal(t, OpLoad, ce.Op)
+	assert.Equal(t, "transform[1]", ce.Path)
+}
+
+func TestWithEnvSubst_EmptyMapInput(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{})),
+		WithEnvSubst(resolve.Vars(map[string]string{"KEY": "val"})),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+}
+
+func TestWithEnvSubst_EmptySliceInMap(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"items": []any{},
+		})),
+		WithEnvSubst(resolve.Vars(map[string]string{"KEY": "val"})),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	items := cfg.Get("items")
+	slice, ok := items.([]any)
+	require.True(t, ok)
+	assert.Empty(t, slice)
+}
+
 func TestWithEnvSubst_OSReadsLiveEnv(t *testing.T) {
 	t.Setenv("SYNTHRA_LIVE_ENVSUBST", "first")
 

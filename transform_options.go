@@ -103,12 +103,9 @@ func WithTransform(fn func(map[string]any) (map[string]any, error)) Option {
 //	// If DPY_VAR_PORT is not set but PORT is in envFileVars, that wins.
 //	// If neither is set, the ${VAR:-default} fallback gives "3000".
 func WithEnvSubst(resolvers ...resolve.Resolver) Option {
+	merged := resolve.Chain(resolvers...)
 	return WithTransform(func(values map[string]any) (map[string]any, error) {
-		merged := resolve.Chain(resolvers...)
-		mapping := func(name string) (string, bool) {
-			return merged(name)
-		}
-		if err := envsubstMap(values, mapping); err != nil {
+		if err := envsubstMap(values, merged, ""); err != nil {
 			return nil, fmt.Errorf("envsubst: %w", err)
 		}
 		return values, nil
@@ -116,22 +113,24 @@ func WithEnvSubst(resolvers ...resolve.Resolver) Option {
 }
 
 // envsubstMap recursively walks values and expands ${VAR} placeholders
-// in all string values using the mapping function.
-func envsubstMap(values map[string]any, mapping func(string) (string, bool)) error {
+// in all string values using the mapping function. The prefix
+// accumulates the dotted path for error messages.
+func envsubstMap(values map[string]any, mapping func(string) (string, bool), prefix string) error {
 	for k, v := range values {
+		path := prefix + k
 		switch val := v.(type) {
 		case string:
 			expanded, err := envsubst.Eval(val, mapping)
 			if err != nil {
-				return fmt.Errorf("key %q: %w", k, err)
+				return fmt.Errorf("key %q: %w", path, err)
 			}
 			values[k] = expanded
 		case map[string]any:
-			if err := envsubstMap(val, mapping); err != nil {
+			if err := envsubstMap(val, mapping, path+"."); err != nil {
 				return err
 			}
 		case []any:
-			if err := envsubstSlice(val, mapping); err != nil {
+			if err := envsubstSlice(val, mapping, path); err != nil {
 				return err
 			}
 		}
@@ -140,22 +139,24 @@ func envsubstMap(values map[string]any, mapping func(string) (string, bool)) err
 }
 
 // envsubstSlice applies envsubst expansion to every element in a slice,
-// recursing into nested maps and slices.
-func envsubstSlice(slice []any, mapping func(string) (string, bool)) error {
+// recursing into nested maps and slices. The prefix is the parent key
+// path; indices are appended as [N].
+func envsubstSlice(slice []any, mapping func(string) (string, bool), prefix string) error {
 	for i, elem := range slice {
+		path := fmt.Sprintf("%s[%d]", prefix, i)
 		switch val := elem.(type) {
 		case string:
 			expanded, err := envsubst.Eval(val, mapping)
 			if err != nil {
-				return fmt.Errorf("index %d: %w", i, err)
+				return fmt.Errorf("key %q: %w", path, err)
 			}
 			slice[i] = expanded
 		case map[string]any:
-			if err := envsubstMap(val, mapping); err != nil {
+			if err := envsubstMap(val, mapping, path+"."); err != nil {
 				return err
 			}
 		case []any:
-			if err := envsubstSlice(val, mapping); err != nil {
+			if err := envsubstSlice(val, mapping, path); err != nil {
 				return err
 			}
 		}
