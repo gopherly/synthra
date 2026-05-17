@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopherly.dev/synthra"
+	"gopherly.dev/synthra/resolve"
 )
 
 func loadConfig(t *testing.T) *synthra.Synthra {
@@ -32,7 +33,7 @@ func loadConfig(t *testing.T) *synthra.Synthra {
 	cfg, err := synthra.New(
 		synthra.WithFile("config.yaml"),
 		synthra.WithJSONSchema(schema),
-		synthra.WithInterpolation(map[string]string{"env": "production"}),
+		synthra.WithEnvSubst(resolve.Vars(map[string]string{"ENV": "production"})),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main demonstrates JSON Schema defaults and WithInterpolation.
+// Package main demonstrates JSON Schema defaults and WithEnvSubst.
 //
 // config.yaml provides only required and non-default values. Synthra
 // automatically fills in missing keys from the schema "default" declarations,
 // including patternProperties defaults applied to every matching component.
-// WithInterpolation then substitutes {env} placeholders in string values.
+// WithEnvSubst then expands ${ENV} placeholders in string values.
 package main
 
 import (
@@ -27,6 +27,7 @@ import (
 	"os"
 
 	"gopherly.dev/synthra"
+	"gopherly.dev/synthra/resolve"
 )
 
 func main() {
@@ -35,17 +36,17 @@ func main() {
 		log.Fatalf("read schema: %v", err)
 	}
 
-	// WithInterpolation substitutes {env} in any string value.
-	// The config.yaml uses "{env}" in no field here, but you can add
-	// e.g. "image: my-app:{env}" to see it in action.
+	// WithEnvSubst expands ${ENV} in any string value.
+	// The config.yaml uses "${ENV}" in no field here, but you can add
+	// e.g. "image: my-app:${ENV}" to see it in action.
 	env := "production"
 
 	cfg, err := synthra.New(
 		synthra.WithFile("config.yaml"),
 		synthra.WithJSONSchema(schema), // validates AND applies "default" values
-		synthra.WithInterpolation(map[string]string{
-			"env": env,
-		}),
+		synthra.WithEnvSubst(resolve.Vars(map[string]string{
+			"ENV": env,
+		})),
 	)
 	if err != nil {
 		log.Fatalf("new: %v", err)

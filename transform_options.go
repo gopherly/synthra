@@ -17,7 +17,9 @@ package synthra
 import (
 	"errors"
 	"fmt"
-	"strings"
+
+	"github.com/fluxcd/pkg/envsubst"
+	"gopherly.dev/synthra/resolve"
 )
 
 // WithTransform registers a function that transforms the merged configuration
@@ -28,7 +30,7 @@ import (
 // The function receives the current values map and must return the (possibly
 // modified) values map. Returning a nil map is treated as an empty map.
 // Returning an error aborts Load with a [*ConfigError] whose Path identifies
-// the failing transform by its index ("transform[0]", "transform[1]", …).
+// the failing transform by its index ("transform[0]", "transform[1]", ...).
 //
 // Multiple transforms are applied as a pipeline: the output of transform N
 // becomes the input of transform N+1.
@@ -56,77 +58,107 @@ func WithTransform(fn func(map[string]any) (map[string]any, error)) Option {
 	}
 }
 
-// WithInterpolation registers a transform that replaces {key} placeholders in
-// all string values with the corresponding value from vars. Placeholders for
-// keys not present in vars are left unchanged.
+// WithEnvSubst registers a transform that expands POSIX-style ${VAR}
+// placeholders in all string values of the merged configuration map.
 //
-// Interpolation runs after JSON Schema defaults are applied and before JSON
-// Schema validation, so the validated values reflect the substituted strings.
+// Resolvers are consulted in order. When more than one resolver knows
+// the same variable name, the last one wins (highest priority last).
+// Use [resolve.Chain] to pre-compose resolvers if needed.
 //
-// Example — substitute the environment name into file paths:
+// Supported syntax includes ${VAR}, ${VAR:-default}, ${VAR:=default},
+// ${VAR^^}, ${VAR#pattern}, and more. The full set is documented at
+// https://pkg.go.dev/github.com/fluxcd/pkg/envsubst.
+//
+// This is different from [WithEnv]. [WithEnv] is a source: it reads
+// environment variables and adds them as configuration keys. For
+// example, APP_SERVER_PORT=8080 becomes server.port in the config
+// map. [WithEnvSubst] is a transform: it expands ${VAR} placeholders
+// that appear inside string values already loaded from other sources.
+// Both can be used together without overlap.
+//
+// Example — expand placeholders using a static map:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithInterpolation(map[string]string{
-//	        "name":   "production",
-//	        "region": "eu-west-1",
-//	    }),
-//	    synthra.WithJSONSchema(schema),
+//	    synthra.WithEnvSubst(resolve.Vars(map[string]string{
+//	        "ENV":  "production",
+//	        "PORT": "8080",
+//	    })),
 //	)
-//	// If config.yaml contains:
-//	//   envFile: ".env.{name}"
-//	//   cluster: "{region}-cluster"
-//	// After Load:
-//	//   cfg.Get("envFile") => ".env.production"
-//	//   cfg.Get("cluster") => "eu-west-1-cluster"
-func WithInterpolation(vars map[string]string) Option {
+//	// If config.yaml contains: host: "app-${ENV}.example.com"
+//	// After Load: cfg.Get("host") => "app-production.example.com"
+//
+// Example — layer multiple resolvers for priority-ordered substitution:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("deployah.yaml"),
+//	    synthra.WithEnvSubst(
+//	        resolve.Vars(manifestVars),    // lowest priority
+//	        resolve.Vars(envFileVars),     // medium priority
+//	        resolve.OSPrefix("DPY_VAR_"),  // highest priority
+//	    ),
+//	)
+//	// config.yaml: port: ${PORT:-3000}
+//	// If DPY_VAR_PORT=9090 is set, port becomes "9090".
+//	// If DPY_VAR_PORT is not set but PORT is in envFileVars, that wins.
+//	// If neither is set, the ${VAR:-default} fallback gives "3000".
+func WithEnvSubst(resolvers ...resolve.Resolver) Option {
 	return WithTransform(func(values map[string]any) (map[string]any, error) {
-		interpolateStrings(values, vars)
+		merged := resolve.Chain(resolvers...)
+		mapping := func(name string) (string, bool) {
+			return merged(name)
+		}
+		if err := envsubstMap(values, mapping); err != nil {
+			return nil, fmt.Errorf("envsubst: %w", err)
+		}
 		return values, nil
 	})
 }
 
-// interpolateStrings recursively walks values and replaces {key} placeholders
-// in all string values using vars. Non-string values are left untouched.
-func interpolateStrings(values map[string]any, vars map[string]string) {
-	if len(vars) == 0 {
-		return
-	}
+// envsubstMap recursively walks values and expands ${VAR} placeholders
+// in all string values using the mapping function.
+func envsubstMap(values map[string]any, mapping func(string) (string, bool)) error {
 	for k, v := range values {
 		switch val := v.(type) {
 		case string:
-			values[k] = replacePlaceholders(val, vars)
+			expanded, err := envsubst.Eval(val, mapping)
+			if err != nil {
+				return fmt.Errorf("key %q: %w", k, err)
+			}
+			values[k] = expanded
 		case map[string]any:
-			interpolateStrings(val, vars)
+			if err := envsubstMap(val, mapping); err != nil {
+				return err
+			}
 		case []any:
-			interpolateSlice(val, vars)
+			if err := envsubstSlice(val, mapping); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
-// interpolateSlice applies placeholder substitution to every element in a
-// slice, recursing into nested maps.
-func interpolateSlice(slice []any, vars map[string]string) {
+// envsubstSlice applies envsubst expansion to every element in a slice,
+// recursing into nested maps and slices.
+func envsubstSlice(slice []any, mapping func(string) (string, bool)) error {
 	for i, elem := range slice {
 		switch val := elem.(type) {
 		case string:
-			slice[i] = replacePlaceholders(val, vars)
+			expanded, err := envsubst.Eval(val, mapping)
+			if err != nil {
+				return fmt.Errorf("index %d: %w", i, err)
+			}
+			slice[i] = expanded
 		case map[string]any:
-			interpolateStrings(val, vars)
+			if err := envsubstMap(val, mapping); err != nil {
+				return err
+			}
 		case []any:
-			interpolateSlice(val, vars)
+			if err := envsubstSlice(val, mapping); err != nil {
+				return err
+			}
 		}
 	}
-}
-
-// replacePlaceholders replaces all {key} occurrences in s with the
-// corresponding value from vars. Unmatched placeholders are left as-is.
-func replacePlaceholders(s string, vars map[string]string) string {
-	if !strings.ContainsRune(s, '{') {
-		return s
-	}
-	for key, val := range vars {
-		s = strings.ReplaceAll(s, fmt.Sprintf("{%s}", key), val)
-	}
-	return s
+	return nil
 }

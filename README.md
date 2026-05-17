@@ -56,7 +56,7 @@ Most Go services load configuration from more than one place. A YAML file holds 
 - Format detection from the file extension (`.yaml`, `.yml`, `.json`, `.toml`).
 - JSON Schema defaults applied automatically: any `"default"` declared in the schema fills missing keys, including `patternProperties` defaults for dynamic key names.
 - Dynamic schema selection (`WithJSONSchemaSelector`): choose the schema at Load time based on a value read from the config itself (e.g. `apiVersion`), no two-pass workaround needed.
-- Post-load transforms (`WithTransform`) and string interpolation (`WithInterpolation`) run before validation.
+- Post-load transforms (`WithTransform`) and POSIX-style variable substitution (`WithEnvSubst`) run before validation.
 - Struct binding with type conversion, default values, and validation.
 - Case-insensitive keys with dot notation (`server.port`).
 - Safe for use from many goroutines at the same time.
@@ -73,7 +73,7 @@ Most Go services load configuration from more than one place. A YAML file holds 
 6. [Default values](#default-values)
 7. [JSON Schema defaults](#json-schema-defaults)
 8. [Dynamic schema selection](#dynamic-schema-selection)
-9. [Transforms and interpolation](#transforms-and-interpolation)
+9. [Transforms and variable substitution](#transforms-and-variable-substitution)
 10. [Validation](#validation)
 11. [Reading values](#reading-values)
 12. [Merge order and precedence](#merge-order-and-precedence)
@@ -430,7 +430,7 @@ The selector runs after sources are merged and before schema defaults, transform
 
 `WithJSONSchema` and `WithJSONSchemaSelector` are mutually exclusive; using both in one `New` call is a construction-time error.
 
-## Transforms and interpolation
+## Transforms and variable substitution
 
 `WithTransform` registers a function that processes the merged configuration map after schema defaults and before validation. Multiple transforms run as a pipeline in registration order.
 
@@ -447,22 +447,57 @@ s := synthra.MustNew(
 )
 ```
 
-`WithInterpolation` is a convenience transform that replaces `{key}` placeholders in all string values with entries from a provided map. Unmatched placeholders are left as-is.
+`WithEnvSubst` is a convenience transform that expands POSIX-style `${VAR}` placeholders in all string values. It supports the full POSIX substitution syntax including defaults (`${VAR:-fallback}`), uppercase conversion (`${VAR^^}`), prefix stripping (`${VAR#prefix}`), and more.
+
+Variable lookup is handled by pluggable resolvers from the `resolve` package. Pass one or more resolvers; the last one to find a given variable name wins (highest priority last).
 
 ```go
+import "gopherly.dev/synthra/resolve"
+
 s := synthra.MustNew(
     synthra.WithFile("config.yaml"),
     synthra.WithJSONSchema(schema),
-    synthra.WithInterpolation(map[string]string{
-        "env":    "production",
-        "region": "eu-west-1",
-    }),
+    synthra.WithEnvSubst(resolve.Vars(map[string]string{
+        "ENV":    "production",
+        "REGION": "eu-west-1",
+    })),
 )
-// If config.yaml has: envFile: ".env.{env}"
+// If config.yaml has: envFile: ".env.${ENV}"
 // After Load:         envFile => ".env.production"
 ```
 
-Interpolation also works with `patternProperties` defaults. If the schema default for a field is `".env.{name}"`, the interpolation transform substitutes `{name}` after the default is applied.
+Layer multiple resolvers for priority-based substitution. The last resolver in the list wins for any given variable name:
+
+```go
+s := synthra.MustNew(
+    synthra.WithFile("deployah.yaml"),
+    synthra.WithEnvSubst(
+        resolve.Vars(manifestVars),    // lowest priority
+        resolve.Vars(envFileVars),     // medium priority
+        resolve.OSPrefix("DPY_VAR_"),  // highest priority
+    ),
+)
+// config.yaml: port: ${PORT:-3000}
+// If DPY_VAR_PORT=9090 is set, port becomes "9090".
+// If DPY_VAR_PORT is not set but PORT is in envFileVars, that value is used.
+// If neither is set, the ${VAR:-default} fallback provides "3000".
+```
+
+The available resolver constructors in `gopherly.dev/synthra/resolve` are:
+
+- `resolve.Vars(m)`: looks up variables from a `map[string]string`
+- `resolve.OS()`: looks up variables using `os.LookupEnv` (reads live env at Load time)
+- `resolve.OSPrefix(prefix)`: looks up OS env vars with a prefix stripped (e.g. `OSPrefix("APP_")` resolves `PORT` from `APP_PORT`)
+- `resolve.Chain(resolvers...)`: combines multiple resolvers, last wins
+
+**`WithEnv` and `WithEnvSubst` solve different problems:**
+
+- `WithEnv` is a source. It reads environment variables and adds them to the config map. For example, `APP_SERVER_PORT=8080` becomes `server.port`. Use this when you want env vars to be config keys.
+- `WithEnvSubst` is a transform. It expands `${VAR}` placeholders that are already present in string values loaded from files or other sources. Use this when your config files contain placeholder strings that should be filled from the environment or a map.
+
+Both can be used together. They do not overlap.
+
+`WithEnvSubst` also works with `patternProperties` defaults. If the schema default for a field is `".env.${NAME}"`, the substitution runs after the default is applied and fills in the placeholder.
 
 ## Validation
 
@@ -802,7 +837,7 @@ The [`examples/`](./examples) folder has small, runnable programs. Each one has 
 | [`formats`](./examples/formats) | JSON and TOML with explicit codecs |
 | [`defaults`](./examples/defaults) | Baked-in defaults, then file, then env |
 | [`jsonschema`](./examples/jsonschema) | JSON Schema validation |
-| [`jsonschema-defaults`](./examples/jsonschema-defaults) | JSON Schema defaults and `WithInterpolation` |
+| [`jsonschema-defaults`](./examples/jsonschema-defaults) | JSON Schema defaults and `WithEnvSubst` |
 | [`customvalidator`](./examples/customvalidator) | Cross-field check with `WithValidator` |
 | [`dump`](./examples/dump) | Writing the merged state to a file |
 | [`consul`](./examples/consul) | Optional Consul source for dev and prod |

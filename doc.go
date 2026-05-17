@@ -38,8 +38,10 @@
 //     automatically applied to missing keys, including patternProperties
 //   - Dynamic schema selection ([WithJSONSchemaSelector]) for version-based or
 //     content-based schema routing at Load time
-//   - Post-load transforms ([WithTransform]) and string interpolation
-//     ([WithInterpolation]) run before validation
+//   - Post-load transforms ([WithTransform]) and POSIX-style variable
+//     substitution ([WithEnvSubst]) run before validation
+//   - Composable variable resolvers ([gopherly.dev/synthra/resolve]) for
+//     maps, OS environment variables, and prefixed env vars
 //   - Struct binding with automatic type conversion
 //   - Validation using JSON Schema or custom validators
 //   - Case-insensitive key access with dot notation
@@ -187,23 +189,49 @@
 //	// validates exactly like WithJSONSchema. WithJSONSchema and
 //	// WithJSONSchemaSelector are mutually exclusive.
 //
-// # Transforms and Interpolation
+// # Transforms and Variable Substitution
 //
 // [WithTransform] registers a function that processes the merged values after
 // schema defaults and before validation. Multiple transforms run as a pipeline.
-// [WithInterpolation] is a convenience transform that replaces {key} placeholders
-// in string values with entries from a provided map:
+//
+// [WithEnvSubst] is a convenience transform that expands POSIX-style ${VAR}
+// placeholders in all string values. It supports the full POSIX substitution
+// syntax: ${VAR:-default}, ${VAR:=default}, ${VAR^^}, ${VAR#pattern}, and more.
+//
+// [WithEnv] and [WithEnvSubst] solve different problems and work well together:
+//
+//   - [WithEnv] is a source. It reads environment variables and adds them to
+//     the config map. For example, APP_SERVER_PORT=8080 becomes server.port.
+//   - [WithEnvSubst] is a transform. It expands ${VAR} placeholders that are
+//     already present in string values loaded from files or other sources.
+//
+// Example — expand ${ENV} from a static map:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
 //	    synthra.WithJSONSchema(schema),
-//	    synthra.WithInterpolation(map[string]string{
-//	        "env":    "production",
-//	        "region": "eu-west-1",
-//	    }),
+//	    synthra.WithEnvSubst(resolve.Vars(map[string]string{
+//	        "ENV":    "production",
+//	        "REGION": "eu-west-1",
+//	    })),
 //	)
-//	// If config.yaml has: envFile: ".env.{env}"
-//	// After Load: cfg.Get("envFile") => ".env.production"
+//	// If config.yaml has: envFile: ".env.${ENV}"
+//	// After Load: cfg.Get("envfile") => ".env.production"
+//
+// Example — layer multiple resolvers (last wins):
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("deployah.yaml"),
+//	    synthra.WithEnvSubst(
+//	        resolve.Vars(manifestVars),    // lowest priority
+//	        resolve.Vars(envFileVars),     // medium priority
+//	        resolve.OSPrefix("DPY_VAR_"),  // highest priority
+//	    ),
+//	)
+//	// config.yaml: port: ${PORT:-3000}
+//	// If DPY_VAR_PORT=9090 is set in the environment, port becomes "9090".
+//
+// Example — custom transform to normalize values:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
@@ -355,7 +383,7 @@
 //   - examples/environment — environment-only configuration
 //   - examples/webapp — layered YAML + env, binding, and Validate
 //   - examples/jsonschema — JSON Schema validation
-//   - examples/jsonschema-defaults — JSON Schema defaults and WithInterpolation
+//   - examples/jsonschema-defaults — JSON Schema defaults and WithEnvSubst
 //   - examples/customvalidator — custom validation functions
 //   - examples/dump — configuration dumping
 //   - examples/consul — optional Consul integration

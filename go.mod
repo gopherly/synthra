@@ -1,9 +1,10 @@
 module gopherly.dev/synthra
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/fluxcd/pkg/envsubst v1.7.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/hashicorp/consul/api v1.34.2
