@@ -241,3 +241,27 @@ func TestConfig_example(t *testing.T) {
 	require.NoError(t, cfg.Load(t.Context()))
 	AssertString(t, cfg, "k", "v")
 }
+
+// TestFuncCodec_NilDecodeFunc covers the nil DecodeFunc guard
+// where Decode is a no-op when DecodeFunc is nil.
+func TestFuncCodec_NilDecodeFunc(t *testing.T) {
+	t.Parallel()
+	mock := &FuncCodec{} // nil DecodeFunc
+	err := mock.Decode([]byte("any data"), nil)
+	require.NoError(t, err)
+}
+
+// TestAssertDumped verifies that AssertDumped passes when the expected keys and
+// values are present in the dumped output.
+func TestAssertDumped(t *testing.T) {
+	t.Parallel()
+
+	d := &Dumper{}
+	cfg := Config(t,
+		synthra.WithSource(source.NewMap(map[string]any{"foo": "bar"})),
+		synthra.WithDumper(d),
+	)
+	require.NoError(t, cfg.Load(t.Context()))
+	require.NoError(t, cfg.Dump(t.Context()))
+	AssertDumped(t, d, map[string]any{"foo": "bar"})
+}

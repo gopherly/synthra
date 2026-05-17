@@ -24,6 +24,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -2739,4 +2740,386 @@ func TestLoad_BindingNestedStructDefaults(t *testing.T) {
 	assert.Equal(t, "default-service", target.Name)
 	assert.Equal(t, 10*time.Second, target.Client.Timeout)
 	assert.Equal(t, 3, target.Client.Retries)
+}
+
+// TestGetOr_ConversionFallback covers the convertToType path in GetOr
+// and the final defaultVal return when conversion itself returns no match.
+func TestGetOr_ConversionFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("string to int conversion succeeds", func(t *testing.T) {
+		t.Parallel()
+		cfg := loadTestConfig(t, map[string]any{"port": "9090"})
+		got := GetOr(cfg, "port", 8080)
+		assert.Equal(t, 9090, got)
+	})
+
+	t.Run("unconvertible type falls back to default", func(t *testing.T) {
+		t.Parallel()
+		type myType struct{ X int }
+		cfg := loadTestConfig(t, map[string]any{"key": "value"})
+		got := GetOr(cfg, "key", myType{X: 1})
+		assert.Equal(t, myType{X: 1}, got)
+	})
+}
+
+// TestOrMethods_KeyExistsHappyPath verifies that each *Or method returns the
+// stored value when the key exists and the type cast succeeds.
+func TestOrMethods_KeyExistsHappyPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := loadTestConfig(t, map[string]any{
+		"host":    "localhost",
+		"enabled": true,
+		"timeout": "30s",
+		"tags":    []any{"a", "b"},
+		"ports":   []any{8080, 9090},
+		"meta":    map[string]any{"version": "1.0"},
+	})
+
+	assert.Equal(t, "localhost", cfg.StringOr("host", "default"))
+	assert.True(t, cfg.BoolOr("enabled", false))
+	assert.Equal(t, 30*time.Second, cfg.DurationOr("timeout", time.Minute))
+	assert.Equal(t, []string{"a", "b"}, cfg.StringSliceOr("tags", nil))
+	assert.Equal(t, []int{8080, 9090}, cfg.IntSliceOr("ports", nil))
+	assert.Equal(t, map[string]any{"version": "1.0"}, cfg.StringMapOr("meta", nil))
+}
+
+// TestTimeOr covers all three paths of TimeOr: nil config, missing key,
+// and key present.
+func TestTimeOr(t *testing.T) {
+	t.Parallel()
+
+	want := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	sentinel := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("nil config returns default", func(t *testing.T) {
+		t.Parallel()
+		var c *Synthra
+		assert.Equal(t, sentinel, c.TimeOr("ts", sentinel))
+	})
+
+	t.Run("missing key returns default", func(t *testing.T) {
+		t.Parallel()
+		cfg := loadTestConfig(t, map[string]any{"foo": "bar"})
+		assert.Equal(t, sentinel, cfg.TimeOr("missing", sentinel))
+	})
+
+	t.Run("key present returns parsed time", func(t *testing.T) {
+		t.Parallel()
+		cfg := loadTestConfig(t, map[string]any{"ts": "2023-01-01T12:00:00Z"})
+		assert.Equal(t, want, cfg.TimeOr("ts", sentinel))
+	})
+}
+
+// TestTypedAccessors_CastFailure_Additional verifies that String, Int64,
+// StringSlice, and IntSlice return an error when the stored value cannot be cast.
+func TestTypedAccessors_CastFailure_Additional(t *testing.T) {
+	t.Parallel()
+
+	// An anonymous struct is not handled by any cast function and produces an error.
+	type unconvertible struct{}
+
+	cfg := loadTestConfig(t, map[string]any{
+		"obj": unconvertible{},
+	})
+
+	assertCastErr := func(t *testing.T, err error, key string) {
+		t.Helper()
+		require.Error(t, err)
+		var ce *ConfigError
+		require.ErrorAs(t, err, &ce, "expected *ConfigError")
+		assert.Equal(t, OpGet, ce.Op)
+		assert.Equal(t, key, ce.Path)
+	}
+
+	t.Run("String with unconvertible value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.String("obj")
+		assertCastErr(t, err, "obj")
+	})
+
+	t.Run("Int64 with unconvertible value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.Int64("obj")
+		assertCastErr(t, err, "obj")
+	})
+
+	t.Run("StringSlice with unconvertible value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.StringSlice("obj")
+		assertCastErr(t, err, "obj")
+	})
+
+	t.Run("IntSlice with unconvertible value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.IntSlice("obj")
+		assertCastErr(t, err, "obj")
+	})
+}
+
+// TestConvertToType_TypeMismatch covers the convertToType case arms that are only
+// reached when the stored type differs from T, so val.(T) fails first.
+func TestConvertToType_TypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	cfg := loadTestConfig(t, map[string]any{
+		"asstring": int(42),
+		"asint64":  "64",
+		"asint32":  "42",
+		"asint16":  "16",
+		"asint8":   "8",
+		"asuint":   "7",
+		"asuint64": "64",
+		"asuint32": "32",
+		"asuint16": "16",
+		"asuint8":  "8",
+		// JSON string — cast.ToStringMap parses it to map[string]any
+		"asmap": `{"k":"v"}`,
+	})
+
+	t.Run("int to string", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[string](cfg, "asstring")
+		require.NoError(t, err)
+		assert.Equal(t, "42", v)
+	})
+
+	t.Run("string to int64", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[int64](cfg, "asint64")
+		require.NoError(t, err)
+		assert.Equal(t, int64(64), v)
+	})
+
+	t.Run("string to int32", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[int32](cfg, "asint32")
+		require.NoError(t, err)
+		assert.Equal(t, int32(42), v)
+	})
+
+	t.Run("string to int16", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[int16](cfg, "asint16")
+		require.NoError(t, err)
+		assert.Equal(t, int16(16), v)
+	})
+
+	t.Run("string to int8", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[int8](cfg, "asint8")
+		require.NoError(t, err)
+		assert.Equal(t, int8(8), v)
+	})
+
+	t.Run("string to uint", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[uint](cfg, "asuint")
+		require.NoError(t, err)
+		assert.Equal(t, uint(7), v)
+	})
+
+	t.Run("string to uint64", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[uint64](cfg, "asuint64")
+		require.NoError(t, err)
+		assert.Equal(t, uint64(64), v)
+	})
+
+	t.Run("string to uint32", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[uint32](cfg, "asuint32")
+		require.NoError(t, err)
+		assert.Equal(t, uint32(32), v)
+	})
+
+	t.Run("string to uint16", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[uint16](cfg, "asuint16")
+		require.NoError(t, err)
+		assert.Equal(t, uint16(16), v)
+	})
+
+	t.Run("string to uint8", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[uint8](cfg, "asuint8")
+		require.NoError(t, err)
+		assert.Equal(t, uint8(8), v)
+	})
+
+	t.Run("map[string]any from JSON string", func(t *testing.T) {
+		t.Parallel()
+		v, err := Get[map[string]any](cfg, "asmap")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"k": "v"}, v)
+	})
+}
+
+// TestApplyDefaults_InvalidTargets covers the guard clauses at the top of
+// applyDefaults.
+func TestApplyDefaults_InvalidTargets(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-pointer returns error", func(t *testing.T) {
+		t.Parallel()
+		err := applyDefaults(42)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "target must be a pointer")
+	})
+
+	t.Run("pointer to non-struct returns error", func(t *testing.T) {
+		t.Parallel()
+		x := "hello"
+		err := applyDefaults(&x)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "pointer to a struct")
+	})
+}
+
+// TestSetDefaults_UnexportedField covers the !field.CanSet() continue branch
+// in setDefaults.
+func TestSetDefaults_UnexportedField(t *testing.T) {
+	t.Parallel()
+
+	type withUnexported struct {
+		Exported   string `default:"hello"`
+		unexported string `default:"world"` //nolint:unused // unexported field for coverage
+	}
+
+	target := &withUnexported{}
+	require.NoError(t, applyDefaults(target))
+	assert.Equal(t, "hello", target.Exported)
+	// unexported field is skipped; no panic or error
+}
+
+// TestSetDefaults_NestedStructPropagatesError covers the error return from the
+// recursive setDefaults call on nested structs.
+func TestSetDefaults_NestedStructPropagatesError(t *testing.T) {
+	t.Parallel()
+
+	type inner struct {
+		Port int `default:"not-a-number"`
+	}
+	type outer struct {
+		Name  string `default:"ok"`
+		Inner inner
+	}
+
+	err := applyDefaults(&outer{})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to set default")
+}
+
+// TestIsZeroValue_PointerInterfaceAndChannel covers the Interface/Pointer branch
+// and the default branch of isZeroValue.
+func TestIsZeroValue_PointerInterfaceAndChannel(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil pointer is zero", func(t *testing.T) {
+		t.Parallel()
+		var p *int
+		assert.True(t, isZeroValue(reflect.ValueOf(p)))
+	})
+
+	t.Run("non-nil pointer is not zero", func(t *testing.T) {
+		t.Parallel()
+		x := 42
+		assert.False(t, isZeroValue(reflect.ValueOf(&x)))
+	})
+
+	t.Run("channel hits default case and returns false", func(t *testing.T) {
+		t.Parallel()
+		ch := make(chan int)
+		assert.False(t, isZeroValue(reflect.ValueOf(ch)))
+	})
+}
+
+// TestSetDefaultValue_ValidUintAndFloat verifies that field.SetUint and
+// field.SetFloat succeed with a valid default string.
+func TestSetDefaultValue_ValidUintAndFloat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid uint default is applied", func(t *testing.T) {
+		t.Parallel()
+		type withUint struct {
+			Limit uint `synthra:"limit" default:"42"`
+		}
+		var target withUint
+		cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+		require.NoError(t, err)
+		require.NoError(t, cfg.Load(context.Background()))
+		assert.Equal(t, uint(42), target.Limit)
+	})
+
+	t.Run("valid float64 default is applied", func(t *testing.T) {
+		t.Parallel()
+		type withFloat struct {
+			Rate float64 `synthra:"rate" default:"3.14"`
+		}
+		var target withFloat
+		cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+		require.NoError(t, err)
+		require.NoError(t, cfg.Load(context.Background()))
+		assert.InDelta(t, 3.14, target.Rate, 0.001)
+	})
+}
+
+// TestLoad_BindingInvalidIntDefault covers the cast.ToInt64E error path in
+// setDefaultValue for integer fields, which was missing while the uint/float/bool
+// invalid-default paths were already tested.
+func TestLoad_BindingInvalidIntDefault(t *testing.T) {
+	t.Parallel()
+
+	type withInt struct {
+		Port int `synthra:"port" default:"not-a-number"`
+	}
+	var target withInt
+	cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+	require.NoError(t, err)
+	err = cfg.Load(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to set default")
+}
+
+// TestGetDecoderConfig_EmptyTagNameFallback covers the tagName == "" guard in
+// getDecoderConfig, which is only reachable when Synthra is constructed directly
+// without configFromConfig.
+func TestGetDecoderConfig_EmptyTagNameFallback(t *testing.T) {
+	t.Parallel()
+
+	s := &Synthra{} // tagName is ""
+	dc := s.getDecoderConfig()
+	require.NotNil(t, dc)
+	assert.Equal(t, "synthra", dc.TagName)
+}
+
+// TestSynthraNilValues covers the c.values == nil guard clauses in Values(),
+// getValueFromMap(), and Dump() that are only reachable when Synthra is
+// constructed directly with a nil values field.
+func TestSynthraNilValues(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Values returns empty map", func(t *testing.T) {
+		t.Parallel()
+		s := &Synthra{}
+		vals := s.Values()
+		require.NotNil(t, vals)
+		assert.Empty(t, *vals)
+	})
+
+	t.Run("getValueFromMap returns nil", func(t *testing.T) {
+		t.Parallel()
+		s := &Synthra{}
+		assert.Nil(t, s.getValueFromMap("any-key"))
+	})
+
+	t.Run("Dump with nil values succeeds", func(t *testing.T) {
+		t.Parallel()
+		d := &recordingDumper{}
+		s := &Synthra{dumpers: []Dumper{d}}
+		require.NoError(t, s.Dump(context.Background()))
+		assert.Equal(t, 1, d.Calls())
+		assert.Empty(t, d.Last())
+	})
 }

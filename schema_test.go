@@ -430,8 +430,7 @@ func TestApplySchemaDefaults_InvalidRegexSkipped(t *testing.T) {
 // TestApplySchemaDefaults_PatternMatchesNonMap documents the behavior when a
 // patternProperties pattern matches a value that is not a map: the scalar is
 // discarded and replaced by a new map with defaults applied.  This is the
-// defined behavior of applySchemaDefaults (see inline comment at line 101-104
-// of schema.go).
+// defined behavior of applySchemaDefaults.
 func TestApplySchemaDefaults_PatternMatchesNonMap(t *testing.T) {
 	t.Parallel()
 
@@ -455,4 +454,38 @@ func TestApplySchemaDefaults_PatternMatchesNonMap(t *testing.T) {
 	resultMap, ok := result["scalarKey"].(map[string]any)
 	require.True(t, ok, "expected scalar to be replaced by a map with defaults")
 	assert.Equal(t, "yes", resultMap["fallback"])
+}
+
+// TestApplySchemaDefaults_InvalidRegexPattern covers the defensive continue that
+// skips regex patterns that fail to compile. The JSON Schema compiler rejects
+// invalid patterns at construction time, so this path can only be reached when
+// calling applySchemaDefaults directly.
+func TestApplySchemaDefaults_InvalidRegexPattern(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"patternProperties": map[string]any{
+			"[invalid(regex": map[string]any{
+				"properties": map[string]any{
+					"name": map[string]any{"default": "fallback"},
+				},
+			},
+		},
+	}
+
+	values := map[string]any{"somekey": map[string]any{}}
+	got := applySchemaDefaults(values, schema)
+	// The invalid pattern is skipped; the value is left unchanged.
+	assert.Equal(t, map[string]any{}, got["somekey"])
+}
+
+// TestApplyItemDefaults_NoItemsKey covers the early return in applyItemDefaults
+// when the property schema has no "items" key.
+func TestApplyItemDefaults_NoItemsKey(t *testing.T) {
+	t.Parallel()
+
+	propSchema := map[string]any{"type": "array"} // no "items" key
+	slice := []any{"a", "b", "c"}
+	got := applyItemDefaults(slice, propSchema)
+	assert.Equal(t, slice, got)
 }
