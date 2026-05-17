@@ -1,27 +1,15 @@
-# Environment Variables Example
+# Environment variables example
 
-This example demonstrates how to use Config with environment variables for configuration.
+Load all configuration from `WEBAPP_*` environment variables -- no files needed.
 
-## Features Demonstrated
+## What it shows
 
-- **Environment Variable Source**: Loading configuration from OS environment variables
-- **Struct Binding**: Mapping environment variables to Go structs
-- **Nested Configuration**: Handling nested configuration structures via environment variables
-- **Direct Access**: Using dot notation to access configuration values
-- **Type Conversion**: Automatic conversion of environment variable strings to Go types
+- `WithEnv("WEBAPP_")` as the only source
+- Nested structs populated from underscore-separated variable names
+- Direct key access with `cfg.String()`, `cfg.Int()`, `cfg.Bool()`
+- Automatic string-to-type conversion
 
-## Configuration Structure
-
-The example includes a simple web application configuration:
-
-- **Server**: Host and port settings
-- **Database**: Primary database connection details
-- **Authentication**: JWT secret configuration
-- **Features**: Debug mode flag
-
-## Running the Example
-
-### 1. Set Environment Variables
+## Set the variables
 
 ```bash
 export WEBAPP_SERVER_HOST=localhost
@@ -33,14 +21,13 @@ export WEBAPP_AUTH_JWT_SECRET=your-secret-key
 export WEBAPP_FEATURES_DEBUG_MODE=true
 ```
 
-### 2. Run the example
+## Run
 
 ```bash
-cd examples/environment
-go run main.go
+cd examples/environment && go run .
 ```
 
-### 3. Run tests
+## Tests
 
 ```bash
 cd examples/environment && go test -v
@@ -62,35 +49,28 @@ Database: db.example.com
 Debug mode is enabled
 ```
 
-## Environment Variable Naming Convention
+## How variable names map to keys
 
-Environment variables follow this naming convention:
+Strip the prefix, split on `_`, and lowercase each part.
 
-- **Prefix**: `WEBAPP_` (configurable)
-- **Hierarchy**: Underscores create nested levels
-- **Conversion**: All keys are converted to lowercase
-
-### Examples
-
-| Environment Variable           | Configuration Path      | Struct Field            |
+| Environment variable           | Config path             | Struct field            |
 |--------------------------------|-------------------------|-------------------------|
 | `WEBAPP_SERVER_HOST`           | `server.host`           | `Server.Host`           |
 | `WEBAPP_DATABASE_PRIMARY_HOST` | `database.primary.host` | `Database.Primary.Host` |
 | `WEBAPP_AUTH_JWT_SECRET`       | `auth.jwt.secret`       | `Auth.JWT.Secret`       |
 
-## Key Concepts
+## Key ideas
 
-1. **Environment Variable Mapping**: Environment variables are mapped to configuration paths using underscores
-2. **Type Safety**: String environment variables are automatically converted to appropriate Go types
-3. **Nested Structures**: Deep nesting is supported through underscore-separated environment variable names
-4. **Direct Access**: Use `cfg.String()`, `cfg.Int()`, etc. to access values directly
+1. **No files required** -- environment variables alone are enough.
+2. **Underscore nesting** -- each `_` after the prefix creates a deeper level.
+3. **Type conversion** -- string values are converted to the struct field's Go type.
+4. **Direct access** -- you can also read keys with `cfg.String("server.host")` instead of binding.
 
-## Production Usage
+## Docker example
 
-This pattern is ideal for containerized applications and follows the [Twelve-Factor App methodology](https://12factor.net/config):
+This pattern follows the [Twelve-Factor App](https://12factor.net/config) methodology and works well with containers:
 
 ```bash
-# Docker example
 docker run -e WEBAPP_SERVER_HOST=0.0.0.0 \
            -e WEBAPP_SERVER_PORT=8080 \
            -e WEBAPP_DATABASE_PRIMARY_HOST=prod-db \

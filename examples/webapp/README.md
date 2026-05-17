@@ -1,38 +1,37 @@
 # Web application example (layered config)
 
-This example shows a realistic pattern: **YAML defaults**, **`WEBAPP_*` environment overrides**, **struct binding** with explicit `synthra` tags, and a **`Validate` method** on the bound struct ([synthra.Validator](https://pkg.go.dev/gopherly.dev/synthra#Validator)).
+A realistic setup: **YAML defaults**, **`WEBAPP_*` environment overrides**, **struct binding**, and a **`Validate` method** on the bound struct.
 
-## Features
+## What it shows
 
-- Mixed sources: `WithFile` then `WithEnv` (later source wins on conflicts)
-- Nested YAML matching nested struct tags (`server.read.timeout`, and so on)
+- Layered sources -- `WithFile` first, then `WithEnv` (later source wins on conflicts)
+- Deeply nested YAML matching nested struct tags (`server.read.timeout`, etc.)
 - Direct key access with dot paths (`cfg.String("server.host")`)
+- Struct-level validation via the [`synthra.Validator`](https://pkg.go.dev/gopherly.dev/synthra#Validator) interface
 - Tests for env-only, YAML-only, layered precedence, and validation failures
 
 ## Run
 
 ```bash
-cd examples/webapp
-go run .
+cd examples/webapp && go run .
 ```
 
 ## Tests
 
 ```bash
-cd examples/webapp
-go test -v
+cd examples/webapp && go test -v
 ```
 
-## Optional: load the same keys from your shell
+## Load keys from your shell (optional)
 
 ```bash
 source examples/webapp/setup_env.sh
 cd examples/webapp && go run .
 ```
 
-## Environment variables
+## How environment variables map to keys
 
-Strip the `WEBAPP_` prefix, split the remainder on `_`, and nest keys in lowercase. Examples:
+Strip the `WEBAPP_` prefix, split on `_`, lowercase.
 
 | Variable | Config key |
 |----------|------------|
@@ -66,4 +65,4 @@ docker build -f examples/Dockerfile -t synthra-webapp-example .
 docker run --rm synthra-webapp-example
 ```
 
-Override ports or hosts at runtime with `-e WEBAPP_SERVER_PORT=8080`, and so on.
+Override values at runtime with `-e WEBAPP_SERVER_PORT=8080`, and so on.

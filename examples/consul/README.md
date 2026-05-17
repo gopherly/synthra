@@ -1,25 +1,36 @@
 # Optional Consul layer
 
-This program always loads `config.yaml`, then **optionally** loads a YAML value from Consul when `CONSUL_HTTP_ADDR` is set, then applies `EDGE_*` environment variables (highest precedence).
+Load `config.yaml` first, optionally pull a YAML value from Consul KV, then apply `EDGE_*` environment variables (highest precedence).
 
-Without Consul, wrapping Consul with `WithIf` makes it a no-op:
+When `CONSUL_HTTP_ADDR` is not set, `WithIf` turns the Consul source into a no-op -- the program still runs using file and environment only.
+
+## Run (without Consul)
 
 ```bash
 cd examples/consul && go run .
 ```
 
-With Consul (illustrative — adjust the KV path to your cluster):
+## Run (with Consul)
+
+Point `CONSUL_HTTP_ADDR` to a running Consul agent and make sure the KV path exists:
 
 ```bash
 export CONSUL_HTTP_ADDR=http://127.0.0.1:8500
-# write YAML to KV at synthra/example/config.yaml (or change the path in main.go)
 cd examples/consul && go run .
 ```
 
-Example `docker compose` for a local Consul agent is left to your infrastructure; the client only needs `CONSUL_HTTP_ADDR` as documented in [synthra.WithConsul](https://pkg.go.dev/gopherly.dev/synthra#WithConsul), used conditionally with `WithIf`.
+Adjust the KV path in `main.go` (`synthra/example/config.yaml`) to match your cluster.
 
-Tests (no live Consul required):
+## Tests
+
+No live Consul is required -- the tests only exercise the file + env path:
 
 ```bash
 cd examples/consul && go test -v
 ```
+
+## Key ideas
+
+1. **Conditional sources** -- `WithIf(condition, option)` adds a source only when the condition is true.
+2. **Graceful degradation** -- the program works with or without Consul.
+3. **Same merge order** -- Consul sits between file and env, so environment variables still win.

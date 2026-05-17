@@ -1,38 +1,26 @@
-# Basic Example
+# Basic example
 
-This example demonstrates the most basic usage of Synthra - loading configuration from a YAML file into a Go struct.
+Load a YAML file into a Go struct. This is the simplest way to use Synthra.
 
-## Features Demonstrated
+## What it shows
 
-- **File Source**: Loading configuration from a YAML file
-- **Struct Binding**: Mapping configuration to Go structs
-- **Type Conversion**: Automatic conversion of different data types
-- **Nested Structures**: Handling nested configuration objects
-- **Arrays and Slices**: Loading string arrays and slices
-- **Time Types**: Parsing time.Duration and time.Time values
-- **URL Types**: Parsing URL strings into *url.URL
+- Loading configuration from a YAML file with `WithFile`
+- Binding values to a Go struct with `WithBinding`
+- Automatic type conversion for `time.Duration`, `time.Time`, `*url.URL`, `bool`, and `string`
+- Nested structs (the `Worker` field)
+- Slices from YAML arrays (`roles`) and comma-separated strings (`types`)
 
-## Configuration Structure
-
-The example includes various configuration types:
-
-- **Basic Types**: string, int, bool, time.Duration
-- **Complex Types**: time.Time, *url.URL
-- **Collections**: []string (both as array and comma-separated string)
-- **Nested Objects**: Worker configuration with timeout and address
-
-## Running the Example
+## Run
 
 ```bash
-cd examples/basic
-go run main.go
+cd examples/basic && go run .
 ```
 
 ## Expected output
 
-`fmt`’s default format for `time.Time` and `time.Duration` depends on locale and version, so do not rely on an exact string. After `go run .` you should see `Foo:bar`, `Timeout` as `10s`, `Debug:true`, worker address `http://localhost:8080`, and roles `admin` / `user`.
+You should see `Foo:bar`, `Timeout` as `10s`, `Debug:true`, a worker address of `http://localhost:8080`, and roles `admin` / `user`.
 
-The struct maps the same YAML key `types` twice on purpose: **`Types`** (`[]string`) and **`Types2`** (`string`) both use `synthra:"types"` to show slice decoding versus leaving the raw comma-separated string.
+The struct maps the same YAML key `types` twice on purpose: `Types` (`[]string`) and `Types2` (`string`) both use `synthra:"types"` to show how Synthra decodes the same value into a slice versus keeping the raw comma-separated string.
 
 ## Tests
 
@@ -40,7 +28,9 @@ The struct maps the same YAML key `types` twice on purpose: **`Types`** (`[]stri
 cd examples/basic && go test -v
 ```
 
-The `config.yaml` file contains:
+## The config file
+
+`config.yaml` contains:
 
 ```yaml
 foo: bar
@@ -56,9 +46,9 @@ worker:
   address: http://localhost:8080
 ```
 
-## Key Concepts
+## Key ideas
 
-1. **Struct Tags**: Use `synthra:"field_name"` to map configuration keys to struct fields
-2. **Type Safety**: Synthra automatically converts values to the appropriate Go types
-3. **Nested Mapping**: Use dot notation in struct tags for nested configuration
-4. **Multiple Formats**: Arrays can be loaded from YAML arrays or comma-separated strings
+1. **Struct tags** -- use `synthra:"key"` to map a YAML key to a struct field.
+2. **Nesting** -- embed a struct field and give it a tag; Synthra walks into the matching YAML object automatically.
+3. **Type safety** -- values are converted to the field's Go type at load time. A mismatch is an error, not a silent zero.
+4. **Slices** -- YAML arrays and comma-separated strings both work.

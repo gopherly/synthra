@@ -1,15 +1,17 @@
 # Synthra examples
 
-Runnable programs under this directory complement the shorter snippets in [example_test.go](../example_test.go) and the package overview on [pkg.go.dev](https://pkg.go.dev/gopherly.dev/synthra).
+Runnable programs that complement the shorter snippets in [example_test.go](../example_test.go) and the package overview on [pkg.go.dev](https://pkg.go.dev/gopherly.dev/synthra).
 
 ## Progression
 
+Start at the top and work down -- each example builds on concepts from the previous ones.
+
 | Directory | What it shows |
-|-----------|----------------|
-| [basic](./basic/) | YAML file + struct binding (`go test` included) |
-| [environment](./environment/) | Environment-only config (`go test` included) |
-| [webapp](./webapp/) | YAML defaults + `WEBAPP_*` overrides + binding + `Validate` + tests |
-| [jsonschema](./jsonschema/) | `WithJSONSchema` on a file |
+|-----------|---------------|
+| [basic](./basic/) | YAML file + struct binding |
+| [environment](./environment/) | Environment-only config |
+| [webapp](./webapp/) | YAML defaults + `WEBAPP_*` overrides + binding + `Validate` |
+| [jsonschema](./jsonschema/) | `WithJSONSchema` validation on a file |
 | [customvalidator](./customvalidator/) | `WithValidator` cross-field rule |
 | [dump](./dump/) | `WithFileDumperAs` + `Dump` of merged state |
 | [defaults](./defaults/) | `WithContent` defaults, then file, then env |
@@ -30,7 +32,7 @@ cd examples/webapp && go run .
 
 ## Tests
 
-Each example that ships tests passes with:
+Every example ships with tests. Run them all at once:
 
 ```bash
 go test ./examples/...
@@ -49,10 +51,10 @@ The image uses the Go version pinned in [Dockerfile](./Dockerfile) (aligned with
 
 ## Environment variable naming
 
-Examples use explicit prefixes (`WEBAPP_`, `APP_`, `EDGE_`, `DEMO_`). Strip the prefix, split on `_`, lowercase, and nest: `WEBAPP_SERVER_READ_TIMEOUT` → `server.read.timeout`.
+Examples use explicit prefixes (`WEBAPP_`, `APP_`, `EDGE_`, `DEMO_`). Strip the prefix, split on `_`, lowercase, and nest: `WEBAPP_SERVER_READ_TIMEOUT` becomes `server.read.timeout`.
 
-## Contributing a new example
+## Adding a new example
 
-1. Add a new subdirectory with `main.go`, `README.md`, and tests when behavior is non-trivial.
+1. Create a subdirectory with `main.go`, `README.md`, and tests.
 2. Link it from this file.
 3. Keep snippets copy-paste accurate (`gopherly.dev/synthra` imports, real paths).
