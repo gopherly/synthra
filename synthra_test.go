@@ -1894,6 +1894,24 @@ func TestWithConsulAs_ExpandsEnvVars(t *testing.T) {
 	_ = err
 }
 
+// TestAddConsulSource_NewConsulError covers the error branch in addConsulSource
+// when the source constructor fails.  consulNewSource is replaced with a stub
+// that always returns an error so we can exercise the path without a real
+// Consul server.
+func TestAddConsulSource_NewConsulError(t *testing.T) {
+	t.Setenv("CONSUL_HTTP_ADDR", "http://localhost:8500")
+
+	orig := consulNewSource
+	t.Cleanup(func() { consulNewSource = orig })
+	consulNewSource = func(_ string, _ codec.Decoder, _ source.ConsulKV) (Source, error) {
+		return nil, errors.New("stub: client creation failed")
+	}
+
+	_, err := New(WithConsul("production/service.yaml"))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "stub: client creation failed")
+}
+
 func TestWithFileDumper(t *testing.T) {
 	t.Parallel()
 

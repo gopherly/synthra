@@ -314,6 +314,12 @@ func WithConsulAs(path string, decoder codec.Decoder) Option {
 	}
 }
 
+// consulNewSource is the constructor used by addConsulSource. It is a
+// package-level variable so tests can replace it without a real Consul server.
+var consulNewSource = func(path string, decoder codec.Decoder, kv source.ConsulKV) (Source, error) {
+	return source.NewConsul(path, decoder, kv)
+}
+
 func addConsulSource(cfg *config, opName, path string, decoder codec.Decoder) {
 	if os.Getenv("CONSUL_HTTP_ADDR") == "" {
 		cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, opName, errors.New("CONSUL_HTTP_ADDR is not set")))
@@ -322,7 +328,7 @@ func addConsulSource(cfg *config, opName, path string, decoder codec.Decoder) {
 
 	path = os.ExpandEnv(path)
 
-	l, err := source.NewConsul(path, decoder, nil)
+	l, err := consulNewSource(path, decoder, nil)
 	if err != nil {
 		cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, opName, err))
 		return

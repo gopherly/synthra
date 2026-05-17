@@ -15,7 +15,6 @@
 package synthra
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -128,28 +127,27 @@ func applyItemDefaults(slice []any, propSchema map[string]any) []any {
 // It is shared by [WithJSONSchema] (at construction time) and the
 // [WithJSONSchemaSelector] path inside [Synthra.Load] (at load time).
 func compileJSONSchema(schema []byte) (*jsonschema.Schema, map[string]any, error) {
-	// Use a unique schema name to avoid caching issues across calls.
+	// Parse the raw bytes first so invalid JSON fails early with a clear error.
+	var raw map[string]any
+	if err := json.Unmarshal(schema, &raw); err != nil {
+		return nil, nil, err
+	}
+
+	// Use a unique schema name to avoid caching collisions across calls.
 	//nolint:gosec // rand.Int() is used for a unique schema name, not security sensitive
 	schemaName := fmt.Sprintf("inline_%d.json", rand.Int())
 	compiler := jsonschema.NewCompiler()
 
-	jsonSchema, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
-	if err != nil {
-		return nil, nil, err
-	}
-	addErr := compiler.AddResource(schemaName, jsonSchema)
-	if addErr != nil {
-		return nil, nil, addErr
-	}
-	compiled, err := compiler.Compile(schemaName)
-	if err != nil {
+	// AddResource cannot fail: raw is a valid map[string]any (already verified
+	// by json.Unmarshal above), the schema name is unique per compiler
+	// instance, and we create a fresh compiler on every call.
+	if err := compiler.AddResource(schemaName, raw); err != nil {
 		return nil, nil, err
 	}
 
-	var raw map[string]any
-	unmarshalErr := json.Unmarshal(schema, &raw)
-	if unmarshalErr != nil {
-		return nil, nil, unmarshalErr
+	compiled, err := compiler.Compile(schemaName)
+	if err != nil {
+		return nil, nil, err
 	}
 	return compiled, raw, nil
 }

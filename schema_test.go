@@ -479,6 +479,42 @@ func TestApplySchemaDefaults_InvalidRegexPattern(t *testing.T) {
 	assert.Equal(t, map[string]any{}, got["somekey"])
 }
 
+// TestApplySchemaDefaults_PatternPropertySchemaNonMap covers the defensive
+// continue in applySchemaDefaults when a patternProperties entry value is not a
+// map[string]any.  The JSON Schema compiler rejects such schemas at build time,
+// so this path is only reachable by calling the function directly.
+func TestApplySchemaDefaults_PatternPropertySchemaNonMap(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"patternProperties": map[string]any{
+			"^foo": "not-a-map", // non-map schema → must be silently skipped
+			"^bar": map[string]any{
+				"properties": map[string]any{
+					"count": map[string]any{"default": 42},
+				},
+			},
+		},
+	}
+
+	data := map[string]any{
+		"fooKey": map[string]any{"x": 1},
+		"barKey": map[string]any{},
+	}
+	result := applySchemaDefaults(data, schema)
+
+	// The non-map pattern is silently skipped; fooKey is unchanged.
+	fooVal, ok := result["fooKey"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 1, fooVal["x"])
+	assert.NotContains(t, fooVal, "count")
+
+	// The valid pattern still applies its default.
+	barVal, ok := result["barKey"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 42, barVal["count"])
+}
+
 // TestApplyItemDefaults_NoItemsKey covers the early return in applyItemDefaults
 // when the property schema has no "items" key.
 func TestApplyItemDefaults_NoItemsKey(t *testing.T) {

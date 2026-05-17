@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync"
 
-	"dario.cat/mergo"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -167,6 +166,21 @@ func MustNew(opts ...Option) *Synthra {
 	return cfg
 }
 
+// deepMerge merges src into dst recursively, overriding dst values with src
+// values. Nested maps are merged in place; all other types replace the dst
+// value outright.
+func deepMerge(dst, src map[string]any) {
+	for k, srcVal := range src {
+		if srcMap, ok := srcVal.(map[string]any); ok {
+			if dstMap, dstOk := dst[k].(map[string]any); dstOk {
+				deepMerge(dstMap, srcMap)
+				continue
+			}
+		}
+		dst[k] = srcVal
+	}
+}
+
 // normalizeMapKeys recursively converts all map keys to lowercase for
 // case-insensitive merging
 func normalizeMapKeys(m map[string]any) map[string]any {
@@ -212,10 +226,7 @@ func (c *Synthra) loadSourcesSequential(ctx context.Context) (map[string]any, er
 		// Normalize keys to lowercase for case-insensitive merging
 		normalizedConf := normalizeMapKeys(conf)
 
-		// Use mergo to merge configuration maps with override behavior
-		if err = mergo.Map(&newValues, normalizedConf, mergo.WithOverride); err != nil {
-			return nil, NewConfigError(OpLoad, fmt.Sprintf("source[%d]", i), err)
-		}
+		deepMerge(newValues, normalizedConf)
 	}
 
 	return newValues, nil
@@ -256,11 +267,6 @@ func (c *Synthra) Load(ctx context.Context) error {
 	newValues, err := c.loadSourcesSequential(ctx)
 	if err != nil {
 		return err
-	}
-
-	// Ensure newValues is never nil
-	if newValues == nil {
-		newValues = make(map[string]any)
 	}
 
 	// Resolve the schema for this load. For static schemas (WithJSONSchema)
@@ -352,12 +358,10 @@ func (c *Synthra) Load(ctx context.Context) error {
 			}
 		}
 
-		if bindErr := c.decodeBindingInto(c.binding, &newValues); bindErr != nil {
-			return NewConfigError(OpLoad, "binding-decode", bindErr)
-		}
-		if bindErr := applyDefaults(c.binding); bindErr != nil {
-			return NewConfigError(OpLoad, "binding-defaults", bindErr)
-		}
+		// tempBinding decoded and validated successfully; copy it into the
+		// real binding. A second decode would succeed identically, so we
+		// avoid the redundant work by copying via reflection.
+		reflect.ValueOf(c.binding).Elem().Set(reflect.ValueOf(tempBinding).Elem())
 	}
 
 	c.values = &newValues
@@ -441,23 +445,27 @@ func (c *Synthra) getValueFromMap(path string) any {
 		return val
 	}
 
-	// 2. Fallback to dot notation traversal
+	// 2. Fallback to dot notation traversal.
+	// Navigate every segment except the last into the nested maps, then
+	// return the final segment's value. strings.Split always returns at
+	// least one element so the final lookup is always executed.
 	segments := strings.Split(normalizedPath, ".")
-	for i, segment := range segments {
-		if currentMap, ok := current[segment]; ok {
-			if i == len(segments)-1 {
-				return currentMap
-			}
-			if nestedMap, isMap := currentMap.(map[string]any); isMap {
-				current = nestedMap
-			} else {
-				return nil
-			}
-		} else {
+	for _, segment := range segments[:len(segments)-1] {
+		val, ok := current[segment]
+		if !ok {
 			return nil
 		}
+		nested, isMap := val.(map[string]any)
+		if !isMap {
+			return nil
+		}
+		current = nested
 	}
-	return nil
+	val, ok := current[segments[len(segments)-1]]
+	if !ok {
+		return nil
+	}
+	return val
 }
 
 // requireValue returns the raw value at key for strict typed accessors and [Get].
