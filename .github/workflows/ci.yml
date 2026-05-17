@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate flake
+        run: nix flake check --no-build
+
+  check:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    needs: [validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fmt-check, tidy, lint]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run ${{ matrix.check }}
+        run: nix run .#${{ matrix.check }}
+
+      - name: Verify no uncommitted changes
+        if: matrix.check == 'tidy'
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Run 'nix run .#tidy' and commit changes"
+            git diff
+            exit 1
+          fi
+
+  unit-test:
+    name: Unit Tests (Race)
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run unit tests with race detector
+        run: nix run .#test-unit
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-unit
+          path: coverage-unit.out
+          retention-days: 1
+
+  integration-test:
+    name: Integration Tests (Race)
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run integration tests with race detector
+        run: nix run .#test-integration
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-integration
+          path: coverage-integration.out
+          retention-days: 1
+
+  report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: [unit-test, integration-test]
+    if: always() && (needs.unit-test.result == 'success' || needs.integration-test.result == 'success')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download unit test coverage
+        if: needs.unit-test.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-unit
+
+      - name: Download integration test coverage
+        if: needs.integration-test.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-integration
+
+      - name: Upload unit coverage to Codecov
+        if: needs.unit-test.result == 'success'
+        uses: codecov/codecov-action@v6
+        with:
+          use_oidc: true
+          fail_ci_if_error: true
+          files: ./coverage-unit.out
+          flags: unittests
+          name: synthra-unit
+          disable_search: true
+
+      - name: Upload integration coverage to Codecov
+        if: needs.integration-test.result == 'success'
+        uses: codecov/codecov-action@v6
+        with:
+          use_oidc: true
+          fail_ci_if_error: true
+          files: ./coverage-integration.out
+          flags: integration
+          name: synthra-integration
+          disable_search: true

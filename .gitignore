@@ -1,0 +1,6 @@
+.direnv/
+.pre-commit-config.yaml
+coverage.out
+coverage-unit.out
+coverage-integration.out
+coverage.html

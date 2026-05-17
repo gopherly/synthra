@@ -1,0 +1,3 @@
+service: api
+port: "not-a-number"
+log_level: info

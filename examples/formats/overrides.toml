@@ -1,0 +1,5 @@
+[listen]
+port = 4000
+
+[meta]
+region = "local"
