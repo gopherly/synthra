@@ -551,3 +551,36 @@ func (m *mockConsulKV) Get(_ string, q *api.QueryOptions) (*api.KVPair, *api.Que
 	}
 	return nil, nil, nil
 }
+
+// mockConsulKVWithValue returns a KVPair with the given value, allowing
+// decode-path failures to be triggered with a controlled payload.
+type mockConsulKVWithValue struct {
+	value []byte
+}
+
+func (m *mockConsulKVWithValue) Get(_ string, _ *api.QueryOptions) (*api.KVPair, *api.QueryMeta, error) {
+	return &api.KVPair{Value: m.value}, &api.QueryMeta{LastIndex: 1}, nil
+}
+
+// failingDecoder is a codec.Decoder that always returns an error.
+type failingDecoder struct{ msg string }
+
+func (d *failingDecoder) Decode(_ []byte, _ any) error {
+	return errors.New(d.msg)
+}
+
+// TestLoad_MockDecodeFailure uses a mock KV that returns a valid KVPair but
+// a decoder that always fails, exercising the decode-error branch in Load
+// without requiring a live Consul container.
+func (s *ConsulSourceTestSuite) TestLoad_MockDecodeFailure() {
+	mockKV := &mockConsulKVWithValue{value: []byte(`{"foo":"bar"}`)}
+	dec := &failingDecoder{msg: "injected decode failure"}
+
+	consul, err := NewConsul("test/mock-decode", dec, mockKV)
+	s.Require().NoError(err)
+
+	_, err = consul.Load(context.Background())
+	s.Require().Error(err)
+	s.Contains(err.Error(), "failed to decode consul value")
+	s.Contains(err.Error(), "injected decode failure")
+}

@@ -361,3 +361,45 @@ func TestReplacePlaceholders(t *testing.T) {
 		})
 	}
 }
+
+// TestWithInterpolation_NestedSliceAndMapInSlice covers the two branches in
+// interpolateSlice that recurse into []any and map[string]any elements.
+func TestWithInterpolation_NestedSliceAndMapInSlice(t *testing.T) {
+	t.Parallel()
+
+	vars := map[string]string{
+		"env":  "prod",
+		"host": "db.prod.local",
+	}
+
+	src := source.NewMap(map[string]any{
+		"items": []any{
+			// Branch 1: map inside slice
+			map[string]any{"dsn": "postgres://{host}"},
+			// Branch 2: nested slice inside slice
+			[]any{"{env}-node1", "{env}-node2"},
+		},
+	})
+
+	cfg, err := New(WithSource(src), WithInterpolation(vars))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	items := cfg.Get("items")
+
+	outerSlice, ok := items.([]any)
+	require.True(t, ok, "expected []any")
+	require.Len(t, outerSlice, 2)
+
+	// Branch 1: map element
+	mapElem, ok := outerSlice[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "postgres://db.prod.local", mapElem["dsn"])
+
+	// Branch 2: nested slice element
+	innerSlice, ok := outerSlice[1].([]any)
+	require.True(t, ok)
+	require.Len(t, innerSlice, 2)
+	assert.Equal(t, "prod-node1", innerSlice[0])
+	assert.Equal(t, "prod-node2", innerSlice[1])
+}

@@ -369,3 +369,90 @@ func TestWithJSONSchema_PatternPropertyDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "service", workerRole)
 }
+
+// TestApplySchemaDefaults_MalformedPropertySchema verifies that the
+// propSchemaOk defensive guard silently skips property schema entries that are
+// not map[string]any.  This can only happen when the schema map is built
+// programmatically — the JSON Schema compiler catches this at build time —
+// so we call applySchemaDefaults directly.
+func TestApplySchemaDefaults_MalformedPropertySchema(t *testing.T) {
+	t.Parallel()
+
+	// Build a schema map where "badKey" has a string value instead of a map.
+	schema := map[string]any{
+		"properties": map[string]any{
+			"validKey": map[string]any{"default": "hello"},
+			"badKey":   "this is a string, not a schema map",
+		},
+	}
+
+	data := map[string]any{}
+	result := applySchemaDefaults(data, schema)
+
+	// badKey is silently skipped; validKey still receives its default.
+	// Keys are normalized to lowercase by applySchemaDefaults.
+	assert.Equal(t, "hello", result["validkey"])
+	assert.NotContains(t, result, "badkey")
+}
+
+// TestApplySchemaDefaults_InvalidRegexSkipped verifies the defensive
+// [regexp.Compile] error path in applySchemaDefaults.  The JSON Schema compiler
+// validates regexes at compile time so this branch is defensive-only; test it
+// via the internal function.
+func TestApplySchemaDefaults_InvalidRegexSkipped(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"patternProperties": map[string]any{
+			// Invalid regex — must be skipped gracefully.
+			"[invalid": map[string]any{"default": "should-not-appear"},
+			// Valid regex — must still apply.
+			"^valid": map[string]any{
+				"properties": map[string]any{
+					"count": map[string]any{"default": 1},
+				},
+			},
+		},
+	}
+
+	data := map[string]any{
+		"validGroup": map[string]any{},
+	}
+	result := applySchemaDefaults(data, schema)
+
+	// Invalid pattern is silently skipped; valid pattern still applies its
+	// nested default.
+	group, ok := result["validGroup"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 1, group["count"])
+}
+
+// TestApplySchemaDefaults_PatternMatchesNonMap documents the behavior when a
+// patternProperties pattern matches a value that is not a map: the scalar is
+// discarded and replaced by a new map with defaults applied.  This is the
+// defined behavior of applySchemaDefaults (see inline comment at line 101-104
+// of schema.go).
+func TestApplySchemaDefaults_PatternMatchesNonMap(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"patternProperties": map[string]any{
+			"^scalar": map[string]any{
+				"properties": map[string]any{
+					"fallback": map[string]any{"default": "yes"},
+				},
+			},
+		},
+	}
+
+	data := map[string]any{
+		// Key matches ^scalar but the value is a plain string.
+		"scalarKey": "just-a-string",
+	}
+	result := applySchemaDefaults(data, schema)
+
+	// The string value is replaced by a map with defaults applied.
+	resultMap, ok := result["scalarKey"].(map[string]any)
+	require.True(t, ok, "expected scalar to be replaced by a map with defaults")
+	assert.Equal(t, "yes", resultMap["fallback"])
+}

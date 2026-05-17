@@ -1497,10 +1497,18 @@ func TestValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "validator panic is caught",
+			name: "validator panic with string is caught",
 			conf: map[string]any{"foo": "bar"},
 			validator: func(_ map[string]any) error {
 				panic("validator panic")
+			},
+			wantErr: true,
+		},
+		{
+			name: "validator panic with error type is caught",
+			conf: map[string]any{"foo": "bar"},
+			validator: func(_ map[string]any) error {
+				panic(errors.New("typed panic error"))
 			},
 			wantErr: true,
 		},
@@ -2442,6 +2450,11 @@ func TestNormalizeMapKeys(t *testing.T) {
 			input:    map[string]any{},
 			expected: map[string]any{},
 		},
+		{
+			name:     "nil map returns nil",
+			input:    nil,
+			expected: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2452,4 +2465,278 @@ func TestNormalizeMapKeys(t *testing.T) {
 			assert.Equal(t, tt.expected, normalized)
 		})
 	}
+}
+
+func TestConcurrency_LoadAndDump(t *testing.T) {
+	t.Parallel()
+
+	src := source.NewMap(map[string]any{"foo": "bar"})
+	d := &recordingDumper{}
+	cfg, err := New(WithSource(src), WithDumper(d))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	const goroutines = 10
+	done := make(chan error, goroutines*2)
+
+	for range goroutines {
+		go func() {
+			done <- cfg.Load(context.Background())
+		}()
+		go func() {
+			done <- cfg.Dump(context.Background())
+		}()
+	}
+
+	for range goroutines * 2 {
+		assert.NoError(t, <-done)
+	}
+}
+
+func TestDump_CancelledContext(t *testing.T) {
+	t.Parallel()
+
+	src := source.NewMap(map[string]any{"foo": "bar"})
+	d := &recordingDumper{}
+	cfg, err := New(WithSource(src), WithDumper(d))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Dump does not short-circuit on a canceled context before calling dumpers;
+	// a simple in-memory dumper that ignores ctx succeeds regardless.
+	err = cfg.Dump(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, d.Calls())
+}
+
+func TestWithIf_NilInnerOptionPanics(t *testing.T) {
+	t.Parallel()
+
+	// WithIf does not validate its inner options; when condition is true
+	// and a nil option is passed, calling New panics at the nil function call.
+	assert.Panics(t, func() {
+		// condition is true so the nil option is executed
+		MustNew(WithIf(true, nil))
+	})
+}
+
+func TestReload_WithBinding(t *testing.T) {
+	t.Parallel()
+
+	data := map[string]any{"foo": "first", "bar": 1}
+	src := source.NewMap(data)
+
+	type bound struct {
+		Foo string `synthra:"foo"`
+		Bar int    `synthra:"bar"`
+	}
+
+	var b bound
+	cfg, err := New(WithSource(src), WithBinding(&b))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+	assert.Equal(t, "first", b.Foo)
+	assert.Equal(t, 1, b.Bar)
+
+	// Mutate source and reload; binding struct must reflect new values.
+	data["foo"] = "second"
+	data["bar"] = 2
+	require.NoError(t, cfg.Load(context.Background()))
+	assert.Equal(t, "second", b.Foo)
+	assert.Equal(t, 2, b.Bar)
+}
+
+func TestWithContent_EmptyAndNilData(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil JSON content fails to load", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := New(WithContent(nil, codec.JSON))
+		require.NoError(t, err)
+		err = cfg.Load(context.Background())
+		require.Error(t, err)
+	})
+
+	t.Run("empty JSON content fails to load", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := New(WithContent([]byte{}, codec.JSON))
+		require.NoError(t, err)
+		err = cfg.Load(context.Background())
+		require.Error(t, err)
+	})
+
+	t.Run("empty YAML content loads as empty map", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := New(WithContent([]byte{}, codec.YAML))
+		require.NoError(t, err)
+		// Empty YAML is valid and produces an empty map.
+		require.NoError(t, cfg.Load(context.Background()))
+		vals := cfg.Values()
+		assert.Empty(t, *vals)
+	})
+}
+
+func TestLoad_FileDeletedAfterNew(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("foo: bar\n"), 0o600))
+
+	cfg, err := New(WithFileAs(tmpFile, codec.YAML))
+	require.NoError(t, err)
+
+	// Delete the file before Load.
+	require.NoError(t, os.Remove(tmpFile))
+
+	err = cfg.Load(context.Background())
+	require.Error(t, err)
+	// Error must propagate from the source layer.
+	var ce *ConfigError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, OpLoad, ce.Op)
+}
+
+// TestTypedAccessors_CastFailure verifies that each strict typed accessor
+// returns a *ConfigError with Op=OpGet when the stored value cannot be
+// coerced to the requested type.
+func TestTypedAccessors_CastFailure(t *testing.T) {
+	t.Parallel()
+
+	// A nested map is unconvertible to numeric/scalar/slice types.
+	cfg := loadTestConfig(t, map[string]any{
+		"nested":  map[string]any{"a": 1},
+		"numtext": "not-a-number",
+		"plain":   42,
+	})
+
+	assertGetError := func(t *testing.T, err error, key string) {
+		t.Helper()
+		require.Error(t, err)
+		var ce *ConfigError
+		require.ErrorAs(t, err, &ce, "expected *ConfigError")
+		assert.Equal(t, OpGet, ce.Op)
+		assert.Equal(t, key, ce.Path)
+	}
+
+	t.Run("Int with map value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.Int("nested")
+		assertGetError(t, err, "nested")
+	})
+
+	t.Run("Bool with map value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.Bool("nested")
+		assertGetError(t, err, "nested")
+	})
+
+	t.Run("Duration with non-duration string", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.Duration("numtext")
+		assertGetError(t, err, "numtext")
+	})
+
+	t.Run("Time with non-time string", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.Time("numtext")
+		assertGetError(t, err, "numtext")
+	})
+
+	t.Run("StringMap with non-map value", func(t *testing.T) {
+		t.Parallel()
+		_, err := cfg.StringMap("plain")
+		assertGetError(t, err, "plain")
+	})
+}
+
+// TestOrMethods_WrongTypeCoercesToZeroNotDefault documents that *Or methods
+// use the non-error cast variants: when a value exists but cannot be
+// coerced they return the cast zero value (e.g. 0, false) rather than the
+// caller-supplied default.
+func TestOrMethods_WrongTypeCoercesToZeroNotDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := loadTestConfig(t, map[string]any{
+		// "numtext" is a non-numeric string; cast.ToInt returns 0
+		"numtext": "hello",
+	})
+
+	// Key is present, value is unconvertible -> cast returns zero, not the default.
+	got := cfg.IntOr("numtext", 99)
+	assert.Equal(t, 0, got, "IntOr returns cast zero, not caller default, when value is present but not numeric")
+
+	got64 := cfg.Int64Or("numtext", int64(99))
+	assert.Equal(t, int64(0), got64)
+
+	gotF := cfg.Float64Or("numtext", 3.14)
+	assert.InDelta(t, 0.0, gotF, 0.0001)
+}
+
+func TestLoad_BindingInvalidDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid uint default fails", func(t *testing.T) {
+		t.Parallel()
+		type withUint struct {
+			Limit uint `synthra:"limit" default:"not-a-number"`
+		}
+		var target withUint
+		cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+		require.NoError(t, err)
+		err = cfg.Load(context.Background())
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "failed to set default")
+	})
+
+	t.Run("invalid float default fails", func(t *testing.T) {
+		t.Parallel()
+		type withFloat struct {
+			Rate float64 `synthra:"rate" default:"not-a-float"`
+		}
+		var target withFloat
+		cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+		require.NoError(t, err)
+		err = cfg.Load(context.Background())
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "failed to set default")
+	})
+
+	t.Run("invalid bool default fails", func(t *testing.T) {
+		t.Parallel()
+		type withBool struct {
+			Debug bool `synthra:"debug" default:"not-a-bool"`
+		}
+		var target withBool
+		cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+		require.NoError(t, err)
+		err = cfg.Load(context.Background())
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "failed to set default")
+	})
+}
+
+func TestLoad_BindingNestedStructDefaults(t *testing.T) {
+	t.Parallel()
+
+	type Inner struct {
+		Timeout time.Duration `synthra:"timeout" default:"10s"`
+		Retries int           `synthra:"retries" default:"3"`
+	}
+	type Outer struct {
+		Name   string `synthra:"name" default:"default-service"`
+		Client Inner  `synthra:"client"`
+	}
+
+	var target Outer
+	cfg, err := New(WithSource(source.NewMap(map[string]any{})), WithBinding(&target))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	assert.Equal(t, "default-service", target.Name)
+	assert.Equal(t, 10*time.Second, target.Client.Timeout)
+	assert.Equal(t, 3, target.Client.Retries)
 }

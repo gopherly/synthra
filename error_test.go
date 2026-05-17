@@ -37,7 +37,7 @@ func TestConfigError_Error(t *testing.T) {
 		wantMsg string
 	}{
 		{
-			name: "with path",
+			name: "with path and err",
 			err: &ConfigError{
 				Op:   OpLoad,
 				Path: "source[0]",
@@ -46,12 +46,30 @@ func TestConfigError_Error(t *testing.T) {
 			wantMsg: "synthra: load source[0]: base error",
 		},
 		{
-			name: "without path",
+			name: "with path but no err",
+			err: &ConfigError{
+				Op:   OpLoad,
+				Path: "source[0]",
+			},
+			wantMsg: "synthra: load source[0]",
+		},
+		{
+			name: "without path with err",
 			err: &ConfigError{
 				Op:  OpLoad,
 				Err: ErrNilContext,
 			},
 			wantMsg: "synthra: load: synthra: nil context",
+		},
+		{
+			name:    "op only, no path, no err",
+			err:     &ConfigError{Op: OpNew},
+			wantMsg: "synthra: new",
+		},
+		{
+			name:    "nil receiver",
+			err:     (*ConfigError)(nil),
+			wantMsg: "synthra: <nil>",
 		},
 	}
 
@@ -61,6 +79,13 @@ func TestConfigError_Error(t *testing.T) {
 			assert.Equal(t, tt.wantMsg, tt.err.Error())
 		})
 	}
+}
+
+func TestConfigError_NilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var ce *ConfigError
+	assert.Nil(t, ce.Unwrap())
 }
 
 func TestConfigError_Unwrap(t *testing.T) {

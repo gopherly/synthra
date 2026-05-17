@@ -53,3 +53,28 @@ func TestFileFS_Load_missingFile(t *testing.T) {
 	_, err := src.Load(context.Background())
 	require.Error(t, err)
 }
+
+func TestFileFS_Load_nilDecoder(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		"app.yaml": &fstest.MapFile{Data: []byte("port: 4242\n")},
+	}
+	src := NewFileFS(fsys, "app.yaml", nil)
+	_, err := src.Load(context.Background())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "decoder is nil")
+}
+
+func TestFileFS_Load_decodeFailure(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{
+		// Valid file path but invalid YAML content (tabs are not allowed in YAML).
+		"app.json": &fstest.MapFile{Data: []byte("{not valid json")},
+	}
+	src := NewFileFS(fsys, "app.json", codec.JSON)
+	_, err := src.Load(context.Background())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "decode")
+}
