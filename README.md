@@ -52,6 +52,7 @@ Most Go services load configuration from more than one place. A YAML file holds 
 
 - One small API for all sources.
 - Clear merge order: later sources win over earlier ones.
+- Twelve-Factor friendly environment support with clear source precedence, so config can move cleanly across environments.
 - Format detection from the file extension (`.yaml`, `.yml`, `.json`, `.toml`).
 - Struct binding with type conversion, default values, and validation.
 - Case-insensitive keys with dot notation (`server.port`).
@@ -387,6 +388,8 @@ s := synthra.MustNew(
     synthra.WithJSONSchema(schema),
 )
 ```
+
+Synthra supports JSON Schema Draft 4, Draft 6, Draft 7, Draft 2019-09, and Draft 2020-12.
 
 ### 3. Custom validator function
 
