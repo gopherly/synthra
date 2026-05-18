@@ -28,19 +28,29 @@ flowchart LR
     S2[Env] --> Merge
     S3[Consul] --> Merge
     S4[Custom] --> Merge
-    Merge --> Validate
-    Validate --> Bind["Bind to struct"]
+    Merge --> Defaults
+
+    subgraph Optional ["if configured"]
+        direction LR
+        Defaults["Schema Defaults"] --> Transform
+        Transform --> Validate["Validate"]
+        Validate --> Bind["Bind to struct"]
+    end
+
     Bind --> Ready["Synthra ready"]
     Ready --> Read["Get / String / Int / ..."]
-    Ready --> Dump["Dump to file"]
+    Ready --> Dump["Dump"]
 
     style S1 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     style S2 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     style S3 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     style S4 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     style Merge fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Defaults fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Transform fill:#fef3c7,stroke:#f59e0b,color:#78350f
     style Validate fill:#fef3c7,stroke:#f59e0b,color:#78350f
     style Bind fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Optional fill:#fffbeb,stroke:#f59e0b,stroke-dasharray:5 5,color:#92400e
     style Ready fill:#d1fae5,stroke:#10b981,color:#064e3b
     style Read fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
     style Dump fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
@@ -52,15 +62,15 @@ Most Go services load configuration from more than one place. A YAML file holds 
 
 - One small API for all sources.
 - Clear merge order: later sources win over earlier ones.
-- Twelve-Factor friendly environment support with clear source precedence, so config can move cleanly across environments.
-- Format detection from the file extension (`.yaml`, `.yml`, `.json`, `.toml`).
-- JSON Schema defaults applied automatically: any `"default"` declared in the schema fills missing keys, including `patternProperties` defaults for dynamic key names.
-- Dynamic schema selection (`WithJSONSchemaSelector`): choose the schema at Load time based on a value read from the config itself (e.g. `apiVersion`), no two-pass workaround needed.
-- Post-load transforms (`WithTransform`) and POSIX-style variable substitution (`WithEnvSubst`) run before validation.
-- Struct binding with type conversion, default values, and validation.
+- Twelve-Factor friendly: environment variables override files cleanly across environments.
+- Automatic format detection from extension (`.yaml`, `.json`, `.toml`).
+- JSON Schema defaults fill missing keys automatically.
+- Dynamic schema selection based on a value inside the config itself.
+- Transforms and POSIX-style variable substitution, applied after merging and before validation.
+- Struct binding with type conversion, defaults, and validation.
 - Case-insensitive keys with dot notation (`server.port`).
-- Safe for use from many goroutines at the same time.
-- Small core, optional extras. Consul is the only heavy dependency; it ships with the module, but you only interact with it if you call `WithConsul` (optionally wrapped with `WithIf`).
+- Safe for concurrent use.
+- Small core, optional extras. Consul is the only heavy dependency, and you only touch it if you need it.
 - A `synthratest` helper package for tests.
 
 ## Contents
@@ -142,7 +152,7 @@ Set `APP_SERVER_PORT=9090` to override the YAML port at runtime.
 
 ## Sources
 
-A source is any type whose `Load` method returns a `map[string]any`. Synthra ships several built-in sources.
+A source is any type whose `Load` method returns a `map[string]any` and an `error`. Synthra ships several built-in sources.
 
 ### File with automatic format detection
 
@@ -376,7 +386,7 @@ s := synthra.MustNew(
 // before validation. Values present in config.yaml are never overridden.
 ```
 
-Defaults are applied at every level of nesting, including `patternProperties`. For dynamic key names (e.g. a map of named components), Synthra applies the `patternProperties` defaults to every existing key that matches the pattern:
+Defaults are applied at every level of nesting, including `patternProperties`. For dynamic key names (like a map of named components), Synthra applies the `patternProperties` defaults to every existing key that matches the pattern:
 
 ```go
 schema := []byte(`{
@@ -409,9 +419,9 @@ schema := []byte(`{
 //   components.worker.replicas => 3       (from config.yaml, not overridden)
 ```
 
-### Dynamic schema selection
+## Dynamic schema selection
 
-Use `WithJSONSchemaSelector` when the right schema depends on a value inside the config itself — the most common case being an `apiVersion` field. The selector is a callback that receives the merged values at Load time and returns the schema bytes to use:
+Use `WithJSONSchemaSelector` when the right schema depends on a value inside the config itself. The most common case is an `apiVersion` field. The selector is a callback that receives the merged values at Load time and returns the schema bytes to use:
 
 ```go
 cfg := synthra.MustNew(
@@ -426,9 +436,9 @@ cfg := synthra.MustNew(
 )
 ```
 
-The selector runs after sources are merged and before schema defaults, transforms, and validation — so the selected schema drives the whole pipeline exactly as if `WithJSONSchema` had been used.
+The selector runs after sources are merged and before schema defaults, transforms, and validation. The selected schema drives the whole pipeline exactly as if `WithJSONSchema` had been used.
 
-`WithJSONSchema` and `WithJSONSchemaSelector` are mutually exclusive; using both in one `New` call is a construction-time error.
+You can use `WithJSONSchema` or `WithJSONSchemaSelector`, but not both. Passing both to `New` returns an error.
 
 ## Transforms and variable substitution
 
@@ -447,7 +457,7 @@ s := synthra.MustNew(
 )
 ```
 
-`WithEnvSubst` is a convenience transform that expands POSIX-style `${VAR}` placeholders in all string values. It supports the full POSIX substitution syntax including defaults (`${VAR:-fallback}`), uppercase conversion (`${VAR^^}`), prefix stripping (`${VAR#prefix}`), and more.
+`WithEnvSubst` is a convenience transform that expands POSIX-style `${VAR}` placeholders in all string values. It supports defaults (`${VAR:-fallback}`), uppercase conversion (`${VAR^^}`), prefix stripping (`${VAR#prefix}`), and more.
 
 Variable lookup is handled by pluggable resolvers from the `resolve` package. Pass one or more resolvers; the last one to find a given variable name wins (highest priority last).
 
@@ -487,7 +497,7 @@ The available resolver constructors in `gopherly.dev/synthra/resolve` are:
 
 - `resolve.Vars(m)`: looks up variables from a `map[string]string`
 - `resolve.OS()`: looks up variables using `os.LookupEnv` (reads live env at Load time)
-- `resolve.OSPrefix(prefix)`: looks up OS env vars with a prefix stripped (e.g. `OSPrefix("APP_")` resolves `PORT` from `APP_PORT`)
+- `resolve.OSPrefix(prefix)`: looks up OS env vars with a prefix stripped (for example, `OSPrefix("APP_")` resolves `PORT` from `APP_PORT`)
 - `resolve.Chain(resolvers...)`: combines multiple resolvers, last wins
 
 **`WithEnv` and `WithEnvSubst` solve different problems:**
@@ -618,13 +628,13 @@ The type comes from the type parameter, or from the default value.
 
 ### Raw access
 
-`Get(key)` returns `any` and `nil` when the key is missing.
+`Get(key)` returns the value as `any`. It returns `nil` when the key is missing.
 
 ```go
 v := s.Get("server.port")  // any
 ```
 
-`Values()` returns a pointer to a shallow copy of the merged map. Treat it as read-only.
+`Values()` returns a copy of the merged map. Treat it as read-only.
 
 ```go
 all := s.Values() // *map[string]any
@@ -782,7 +792,7 @@ Synthra returns structured errors of type `*ConfigError`. They follow the shape 
 ```go
 type ConfigError struct {
     Op   string  // "new", "load", "dump", or "get"
-    Path string  // diagnostic locator (source index, field, schema name, ...)
+    Path string  // where the error happened (source index, field, schema name, ...)
     Err  error   // the underlying cause
 }
 ```
@@ -823,7 +833,7 @@ A `*Synthra` is safe for use by many goroutines:
 - `Load` can be called many times. The internal map is replaced atomically when loading succeeds.
 - All read methods (`Get`, `String`, `Int`, `Values`, ...) hold a read lock.
 - `Dump` reads a snapshot of the current values, so dumpers do not block reads.
-- The bound struct is not protected. If you re-load while another goroutine reads the struct, you need your own synchronization.
+- The bound struct is not protected. If you re-load while another goroutine reads the struct, you are responsible for synchronizing access yourself.
 
 ## Examples
 
