@@ -1,0 +1,4 @@
+service: my-app
+region: ${REGION}
+image: my-app:${TAG:-latest}
+db_url: postgres://${DB_HOST:-localhost}:5432/mydb

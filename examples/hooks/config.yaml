@@ -1,0 +1,10 @@
+env: dev
+logging:
+  level: INFO
+server:
+  tls:
+    enabled: true
+    cert:
+      file: "/etc/ssl/certs/server.crt"
+    key:
+      file: "/etc/ssl/private/server.key"

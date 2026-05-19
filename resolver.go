@@ -26,6 +26,9 @@ import (
 // the second return value reports whether the variable was found.
 // A nil Resolver always returns ("", false).
 // A Resolver must be safe for concurrent use.
+//
+// To consult multiple sources, compose them with [Resolver.Or]:
+// the first Resolver that reports found wins.
 type Resolver func(name string) (value string, found bool)
 
 // FromMap returns a Resolver that looks up variables from a static map.
@@ -72,7 +75,7 @@ func FromEnv() Resolver {
 //	    synthra.WithEnvSubst(synthra.FromEnv().Prefix("APP_")),
 //	)
 //
-// Example — prefix applied to a .env file resolver:
+// Example — prefix applied to a .env file resolver, with OS env as fallback:
 //
 //	envFile, err := synthra.FromEnvFile(".env")
 //	if err != nil {
@@ -81,7 +84,7 @@ func FromEnv() Resolver {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvSubst(envFile.Prefix("APP_"), synthra.FromEnv().Prefix("APP_")),
+//	    synthra.WithEnvSubst(synthra.FromEnv().Prefix("APP_").Or(envFile.Prefix("APP_"))),
 //	)
 func (r Resolver) Prefix(prefix string) Resolver {
 	if prefix == "" {
@@ -89,6 +92,72 @@ func (r Resolver) Prefix(prefix string) Resolver {
 	}
 	return func(name string) (string, bool) {
 		return r(prefix + name)
+	}
+}
+
+// Or returns a Resolver that tries the receiver first, then each fallback in
+// order, stopping at the first one that reports found. This is the standard
+// Go lookup-chain pattern: the same semantics as [context.Value], where the
+// innermost (highest-priority) context shadows outer ones.
+//
+// Precedence rule: the receiver has highest priority; fallbacks are consulted
+// in the order they are listed. The first Resolver to return found=true wins.
+//
+// Empty string counts as found. A resolver that returns ("", true) stops the
+// Or chain — no further fallback resolver is consulted. This matches
+// [context.Value] behavior: a deliberately-set empty value shadows later
+// contexts.
+//
+// Note: the envsubst library processes ${VAR:-default} according to POSIX,
+// which fires when the variable is unset OR empty. So even if Or stops the
+// chain with ("", true), a template that uses ${VAR:-fallback} will still
+// expand to "fallback". Use bare ${VAR} or ${VAR-fallback} (single dash, unset
+// only) if you need to distinguish unset from explicitly empty.
+//
+// Nil fallbacks in the list are silently skipped, which makes it safe to pass
+// a conditionally-built resolver without a guard:
+//
+//	r.Or(maybeNilResolver, synthra.FromEnv())
+//
+// A nil receiver is treated as a Resolver that never finds anything; fallbacks
+// are still consulted in order.
+//
+// Or() with no arguments returns the receiver unchanged.
+//
+// Example — three-layer priority (OS env prefix > .env file > static defaults):
+//
+//	envFile, err := synthra.FromEnvFile(".env")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubst(
+//	        synthra.FromEnv().Prefix("APP_").     // highest: prefixed OS env
+//	            Or(envFile).                       // middle:  .env file
+//	            Or(synthra.FromMap(defaults)),     // lowest:  static defaults
+//	    ),
+//	)
+func (r Resolver) Or(fallbacks ...Resolver) Resolver {
+	if len(fallbacks) == 0 {
+		return r
+	}
+	return func(name string) (string, bool) {
+		if r != nil {
+			if v, ok := r(name); ok {
+				return v, true
+			}
+		}
+		for _, fb := range fallbacks {
+			if fb == nil {
+				continue
+			}
+			if v, ok := fb(name); ok {
+				return v, true
+			}
+		}
+		return "", false
 	}
 }
 
@@ -116,10 +185,10 @@ func (r Resolver) Prefix(prefix string) Resolver {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvSubst(envFile, synthra.FromEnv()),
+//	    synthra.WithEnvSubst(synthra.FromEnv().Or(envFile)),
 //	)
 //
-// Example — layered with .env.local override (last wins):
+// Example — layered with .env.local override (first match wins via Or):
 //
 //	base, err := synthra.FromEnvFile(".env")
 //	if err != nil {
@@ -132,7 +201,7 @@ func (r Resolver) Prefix(prefix string) Resolver {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvSubst(base, local, synthra.FromEnv()),
+//	    synthra.WithEnvSubst(synthra.FromEnv().Or(local).Or(base)),
 //	)
 func FromEnvFile(path string) (Resolver, error) {
 	f, err := os.Open(path) //nolint:gosec // caller controls the path
@@ -147,26 +216,4 @@ func FromEnvFile(path string) (Resolver, error) {
 	}
 
 	return FromMap(m), nil
-}
-
-// chainResolvers merges multiple resolvers into one. Resolvers are checked in
-// order; when more than one resolves the same variable name, the last one wins
-// (highest priority last). Nil resolvers in the chain are skipped.
-//
-// If no resolvers are given, the returned Resolver always returns ("", false).
-func chainResolvers(resolvers ...Resolver) Resolver {
-	return func(name string) (string, bool) {
-		var val string
-		var found bool
-		for _, r := range resolvers {
-			if r == nil {
-				continue
-			}
-			if v, ok := r(name); ok {
-				val = v
-				found = true
-			}
-		}
-		return val, found
-	}
 }

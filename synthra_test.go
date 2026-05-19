@@ -208,18 +208,9 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name:    "with nil binding fails",
-			opts:    []Option{WithBinding(nil)},
+			opts:    []Option{WithBinding((*bindStruct)(nil))},
 			wantErr: true,
 			errMsg:  "binding target cannot be nil",
-		},
-		{
-			name: "with non-pointer binding fails",
-			opts: []Option{
-				WithSource(source.NewMap(map[string]any{"foo": "bar"})),
-				WithBinding(bindStruct{}), // not a pointer
-			},
-			wantErr: true,
-			errMsg:  "binding target must be a pointer",
 		},
 	}
 
@@ -247,7 +238,7 @@ func TestNew_multipleValidationErrors(t *testing.T) {
 	t.Parallel()
 	cfg, err := New(
 		WithSource(nil),
-		WithBinding(nil),
+		WithBinding((*bindStruct)(nil)),
 	)
 	require.Error(t, err)
 	require.Nil(t, cfg)
@@ -459,7 +450,7 @@ func TestNew_WithConsul_OptionErrorPaths(t *testing.T) {
 func TestNew_MultipleOptionErrors(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(WithSource(nil), WithDumper(nil), WithBinding(nil))
+	_, err := New(WithSource(nil), WithDumper(nil), WithBinding((*bindStruct)(nil)))
 	require.Error(t, err)
 	// Errors are joined; all should be present
 	assert.Contains(t, err.Error(), "source cannot be nil")
@@ -666,91 +657,55 @@ func TestValues_WithoutLoad(t *testing.T) {
 func TestBinding(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name      string
-		conf      map[string]any
-		setupBind func() any
-		verify    func(t *testing.T, target any)
-		wantErr   bool
-	}{
-		{
-			name: "basic binding succeeds",
-			conf: map[string]any{"foo": "bar", "bar": 42},
-			setupBind: func() any {
-				return &bindStruct{}
-			},
-			verify: func(t *testing.T, target any) {
-				t.Helper()
-				bind, isBind := target.(*bindStruct)
-				require.True(t, isBind)
-				assert.Equal(t, "bar", bind.Foo)
-				assert.Equal(t, 42, bind.Bar)
-			},
-			wantErr: false,
-		},
-		{
-			name: "binding with extra fields succeeds",
-			conf: map[string]any{"foo": "bar", "bar": 42, "extra": 99},
-			setupBind: func() any {
-				return &bindStruct{}
-			},
-			verify: func(t *testing.T, target any) {
-				t.Helper()
-				bind, isBind := target.(*bindStruct)
-				require.True(t, isBind)
-				assert.Equal(t, "bar", bind.Foo)
-				assert.Equal(t, 42, bind.Bar)
-			},
-			wantErr: false,
-		},
-		{
-			name: "binding with missing fields uses defaults",
-			conf: map[string]any{"foo": "bar"},
-			setupBind: func() any {
-				return &bindStruct{}
-			},
-			verify: func(t *testing.T, target any) {
-				t.Helper()
-				bind, isBind := target.(*bindStruct)
-				require.True(t, isBind)
-				assert.Equal(t, "bar", bind.Foo)
-				assert.Equal(t, 0, bind.Bar)
-			},
-			wantErr: false,
-		},
-		{
-			name: "binding with type mismatch fails",
-			conf: map[string]any{"foo": 123, "bar": "notanint"},
-			setupBind: func() any {
-				return &bindStruct{}
-			},
-			verify:  nil,
-			wantErr: true,
-		},
-	}
+	t.Run("basic binding succeeds", func(t *testing.T) {
+		t.Parallel()
+		var bind bindStruct
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{"foo": "bar", "bar": 42})),
+			WithBinding(&bind),
+		)
+		require.NoError(t, err)
+		require.NoError(t, cfg.Load(context.Background()))
+		assert.Equal(t, "bar", bind.Foo)
+		assert.Equal(t, 42, bind.Bar)
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	t.Run("binding with extra fields succeeds", func(t *testing.T) {
+		t.Parallel()
+		var bind bindStruct
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{"foo": "bar", "bar": 42, "extra": 99})),
+			WithBinding(&bind),
+		)
+		require.NoError(t, err)
+		require.NoError(t, cfg.Load(context.Background()))
+		assert.Equal(t, "bar", bind.Foo)
+		assert.Equal(t, 42, bind.Bar)
+	})
 
-			target := tt.setupBind()
-			src := source.NewMap(tt.conf)
-			cfg, err := New(WithSource(src), WithBinding(target))
-			require.NoError(t, err)
+	t.Run("binding with missing fields uses defaults", func(t *testing.T) {
+		t.Parallel()
+		var bind bindStruct
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{"foo": "bar"})),
+			WithBinding(&bind),
+		)
+		require.NoError(t, err)
+		require.NoError(t, cfg.Load(context.Background()))
+		assert.Equal(t, "bar", bind.Foo)
+		assert.Equal(t, 0, bind.Bar)
+	})
 
-			err = cfg.Load(context.Background())
-
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-
-			require.NoError(t, err)
-			if tt.verify != nil {
-				tt.verify(t, target)
-			}
-		})
-	}
+	t.Run("binding with type mismatch fails", func(t *testing.T) {
+		t.Parallel()
+		var bind bindStruct
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{"foo": 123, "bar": "notanint"})),
+			WithBinding(&bind),
+		)
+		require.NoError(t, err)
+		require.Error(t, cfg.Load(context.Background()))
+	})
 }
 
 func TestBinding_DefaultTag(t *testing.T) {
@@ -1471,15 +1426,15 @@ func TestValidation(t *testing.T) {
 	tests := []struct {
 		name      string
 		conf      map[string]any
-		validator func(map[string]any) error
+		validator func(*Values) error
 		wantErr   bool
 		errMsg    string
 	}{
 		{
 			name: "validator passes",
 			conf: map[string]any{"foo": "baz"},
-			validator: func(cfg map[string]any) error {
-				if cfg["foo"] != "baz" {
+			validator: func(v *Values) error {
+				if v.StringOr("foo", "") != "baz" {
 					return errors.New("foo must be 'baz'")
 				}
 				return nil
@@ -1489,8 +1444,8 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator fails",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(cfg map[string]any) error {
-				if cfg["foo"] != "baz" {
+			validator: func(v *Values) error {
+				if v.StringOr("foo", "") != "baz" {
 					return errors.New("foo must be 'baz'")
 				}
 				return nil
@@ -1500,7 +1455,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator panic with string is caught",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(_ map[string]any) error {
+			validator: func(_ *Values) error {
 				panic("validator panic")
 			},
 			wantErr: true,
@@ -1508,7 +1463,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator panic with error type is caught",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(_ map[string]any) error {
+			validator: func(_ *Values) error {
 				panic(errors.New("typed panic error"))
 			},
 			wantErr: true,
@@ -2396,94 +2351,46 @@ func TestCaseInsensitiveMerging(t *testing.T) {
 	}
 }
 
-func TestNormalizeMapKeys(t *testing.T) {
+func TestDeepMerge_SameCase_OverridesValue(t *testing.T) {
 	t.Parallel()
+	dst := map[string]any{"foo": "original"}
+	src := map[string]any{"foo": "updated"}
+	deepMerge(dst, src)
+	assert.Equal(t, "updated", dst["foo"])
+}
 
-	tests := []struct {
-		name     string
-		input    map[string]any
-		expected map[string]any
-	}{
-		{
-			name: "normalizes all keys to lowercase",
-			input: map[string]any{
-				"Server": map[string]any{
-					"Host": "localhost",
-					"Port": 8080,
-				},
-				"Database": map[string]any{
-					"Name": "testdb",
-					"Settings": map[string]any{
-						"MaxConnections": 100,
-					},
-				},
-			},
-			expected: map[string]any{
-				"server": map[string]any{
-					"host": "localhost",
-					"port": 8080,
-				},
-				"database": map[string]any{
-					"name": "testdb",
-					"settings": map[string]any{
-						"maxconnections": 100,
-					},
-				},
-			},
-		},
-		{
-			name: "handles already lowercase keys",
-			input: map[string]any{
-				"server": "localhost",
-				"port":   8080,
-			},
-			expected: map[string]any{
-				"server": "localhost",
-				"port":   8080,
-			},
-		},
-		{
-			name: "handles uppercase keys",
-			input: map[string]any{
-				"SERVER": "localhost",
-				"PORT":   8080,
-			},
-			expected: map[string]any{
-				"server": "localhost",
-				"port":   8080,
-			},
-		},
-		{
-			name: "handles mixed case keys",
-			input: map[string]any{
-				"MyServer": "localhost",
-				"MyPort":   8080,
-			},
-			expected: map[string]any{
-				"myserver": "localhost",
-				"myport":   8080,
-			},
-		},
-		{
-			name:     "handles empty map",
-			input:    map[string]any{},
-			expected: map[string]any{},
-		},
-		{
-			name:     "nil map returns nil",
-			input:    nil,
-			expected: nil,
-		},
+func TestDeepMerge_DifferentCase_FirstCasingWins_ValueOverridden(t *testing.T) {
+	t.Parallel()
+	dst := map[string]any{"Foo": "original"}
+	src := map[string]any{"foo": "updated"}
+	deepMerge(dst, src)
+	// The key "Foo" was already in dst; first-writer casing ("Foo") is preserved.
+	assert.Equal(t, "updated", dst["Foo"])
+	_, hasLower := dst["foo"]
+	assert.False(t, hasLower, "lowercase duplicate must not be added")
+}
+
+func TestDeepMerge_NewKey_KeepsSourceCasing(t *testing.T) {
+	t.Parallel()
+	dst := map[string]any{}
+	src := map[string]any{"Bar": 42}
+	deepMerge(dst, src)
+	assert.Equal(t, 42, dst["Bar"])
+}
+
+func TestDeepMerge_NestedMap_RecursesAndPreservesCasing(t *testing.T) {
+	t.Parallel()
+	dst := map[string]any{
+		"Server": map[string]any{"Host": "localhost"},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			normalized := normalizeMapKeys(tt.input)
-			assert.Equal(t, tt.expected, normalized)
-		})
+	src := map[string]any{
+		"server": map[string]any{"port": 8080},
 	}
+	deepMerge(dst, src)
+	nested, ok := dst["Server"].(map[string]any)
+	require.True(t, ok, "Server key should be preserved with original casing")
+	assert.Equal(t, "localhost", nested["Host"])
+	assert.Equal(t, 8080, nested["port"])
 }
 
 func TestConcurrency_LoadAndDump(t *testing.T) {
@@ -3140,4 +3047,83 @@ func TestSynthraNilValues(t *testing.T) {
 		assert.Equal(t, 1, d.Calls())
 		assert.Empty(t, d.Last())
 	})
+}
+
+func TestGetValueFromMap_ExactMatch(t *testing.T) {
+	t.Parallel()
+
+	src := source.NewMap(map[string]any{"apiVersion": "v1"})
+	cfg, err := New(WithSource(src))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+	assert.Equal(t, "v1", mustString(t, cfg, "apiVersion"))
+}
+
+func TestGetValueFromMap_FoldMatch(t *testing.T) {
+	t.Parallel()
+
+	src := source.NewMap(map[string]any{"apiVersion": "v1"})
+	cfg, err := New(WithSource(src))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+	// Case-insensitive lookup: "apiversion" must find "apiVersion".
+	assert.Equal(t, "v1", mustString(t, cfg, "apiversion"))
+}
+
+func TestGetValueFromMap_DotPathMixedCase(t *testing.T) {
+	t.Parallel()
+
+	src := source.NewMap(map[string]any{
+		"server": map[string]any{"Host": "localhost"},
+	})
+	cfg, err := New(WithSource(src))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+	assert.Equal(t, "localhost", mustString(t, cfg, "server.host"))
+	assert.Equal(t, "localhost", mustString(t, cfg, "Server.Host"))
+}
+
+func TestLoad_TwoYAMLs_DifferentCasing_FirstWins(t *testing.T) {
+	t.Parallel()
+
+	// First source defines "Host"; second source defines "host".
+	// After deepMerge the first-writer casing ("Host") must survive.
+	first := source.NewMap(map[string]any{"Host": "primary"})
+	second := source.NewMap(map[string]any{"host": "secondary"})
+	cfg, err := New(WithSource(first), WithSource(second))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+	// Value is overridden but original casing ("Host") is kept.
+	assert.Equal(t, "secondary", mustString(t, cfg, "Host"))
+	assert.Equal(t, "secondary", mustString(t, cfg, "host"))
+}
+
+func TestLoad_OnBoundRunsBeforeValidate(t *testing.T) {
+	t.Parallel()
+
+	type LevelCfg struct {
+		Level string `synthra:"level"`
+	}
+
+	var out LevelCfg
+	h1Ran := false
+	h2SawH1 := false
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{"level": "debug"})),
+		WithBinding(&out,
+			OnBound(func(_ *LevelCfg) error {
+				h1Ran = true
+				return nil
+			}),
+			OnBound(func(_ *LevelCfg) error {
+				h2SawH1 = h1Ran
+				return nil
+			}),
+		),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+	assert.True(t, h1Ran)
+	assert.True(t, h2SawH1, "hook2 must run after hook1")
 }

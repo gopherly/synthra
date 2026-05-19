@@ -1,0 +1,19 @@
+# Minimal config: only required and non-default values are specified.
+# All other fields (port, logLevel, server.timeout, etc.) are filled in
+# from the JSON Schema defaults by synthra at load time.
+service: my-app
+
+# server block is present but only partially specified; timeout comes from
+# the schema default.
+server:
+  maxConnections: 50
+
+# Only image is provided per component; role and replicas come from the
+# patternProperties defaults in the schema.
+components:
+  web:
+    image: nginx:1.27
+  worker:
+    image: my-app:latest
+    role: worker
+    replicas: 3

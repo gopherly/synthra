@@ -37,7 +37,6 @@ func TestBasic_YAMLBinding(t *testing.T) {
 	require.True(t, cfg.Debug)
 	require.Equal(t, []string{"admin", "user"}, cfg.Roles)
 	require.Equal(t, []string{"x1", "x2", "x3"}, cfg.Types)
-	require.Equal(t, "x1,x2,x3", cfg.Types2)
 	require.Equal(t, "http://localhost:8080", cfg.Worker.Address.String())
 	// worker.timeout is a bare integer in YAML; decoding follows Synthra scalar rules.
 	require.NotZero(t, cfg.Worker.Timeout)

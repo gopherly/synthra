@@ -231,9 +231,8 @@ func TestApplySchemaDefaults_ArrayItems(t *testing.T) {
 		values := map[string]any{
 			"environments": []any{
 				map[string]any{"name": "production"},
-				// Use lowercase "envfile" to match synthra's key normalization
-				// convention; keys are lowercased during source merging.
-				map[string]any{"name": "staging", "envfile": ".env.staging"},
+				// Use schema-matching casing "envFile".
+				map[string]any{"name": "staging", "envFile": ".env.staging"},
 			},
 		}
 		got := applySchemaDefaults(values, schema)
@@ -241,14 +240,14 @@ func TestApplySchemaDefaults_ArrayItems(t *testing.T) {
 		require.True(t, ok)
 		require.Len(t, envs, 2)
 
-		// Schema default key "envFile" is normalized to "envfile".
+		// Schema default key "envFile" is stored with the schema's casing.
 		prod, ok := envs[0].(map[string]any)
 		require.True(t, ok)
-		assert.Equal(t, ".env", prod["envfile"])
+		assert.Equal(t, ".env", prod["envFile"])
 
 		staging, ok := envs[1].(map[string]any)
 		require.True(t, ok)
-		assert.Equal(t, ".env.staging", staging["envfile"])
+		assert.Equal(t, ".env.staging", staging["envFile"])
 	})
 }
 
@@ -390,9 +389,9 @@ func TestApplySchemaDefaults_MalformedPropertySchema(t *testing.T) {
 	result := applySchemaDefaults(data, schema)
 
 	// badKey is silently skipped; validKey still receives its default.
-	// Keys are normalized to lowercase by applySchemaDefaults.
-	assert.Equal(t, "hello", result["validkey"])
-	assert.NotContains(t, result, "badkey")
+	// The key is stored with the schema's declared casing (not lowercased).
+	assert.Equal(t, "hello", result["validKey"])
+	assert.NotContains(t, result, "badKey")
 }
 
 // TestApplySchemaDefaults_InvalidRegexSkipped verifies the defensive
@@ -524,4 +523,145 @@ func TestApplyItemDefaults_NoItemsKey(t *testing.T) {
 	slice := []any{"a", "b", "c"}
 	got := applyItemDefaults(slice, propSchema)
 	assert.Equal(t, slice, got)
+}
+
+func TestSchemaCanonicalization_RenamesValuesKeyToSchemaCase(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"properties": map[string]any{
+			"apiVersion": map[string]any{"type": "string"},
+		},
+	}
+	values := map[string]any{"apiversion": "v1"}
+	got := canonicalizeSchemaKeys(values, schema)
+	_, hasOld := got["apiversion"]
+	assert.False(t, hasOld, "old lowercase key must be removed")
+	assert.Equal(t, "v1", got["apiVersion"])
+}
+
+func TestSchemaCanonicalization_LeavesMatchingKeyAlone(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"properties": map[string]any{
+			"apiVersion": map[string]any{"type": "string"},
+		},
+	}
+	values := map[string]any{"apiVersion": "v2"}
+	got := canonicalizeSchemaKeys(values, schema)
+	assert.Equal(t, "v2", got["apiVersion"])
+	assert.Len(t, got, 1)
+}
+
+func TestSchemaCanonicalization_LeavesUnknownKeysAlone(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"properties": map[string]any{
+			"known": map[string]any{"type": "string"},
+		},
+	}
+	values := map[string]any{
+		"known":   "yes",
+		"Unknown": "stays",
+	}
+	got := canonicalizeSchemaKeys(values, schema)
+	assert.Equal(t, "yes", got["known"])
+	assert.Equal(t, "stays", got["Unknown"])
+}
+
+func TestSchemaCanonicalization_NestedObject(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"properties": map[string]any{
+			"server": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"Host": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+	values := map[string]any{
+		"server": map[string]any{"host": "localhost"},
+	}
+	got := canonicalizeSchemaKeys(values, schema)
+	nested, ok := got["server"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "localhost", nested["Host"])
+	_, hasOld := nested["host"]
+	assert.False(t, hasOld)
+}
+
+func TestSchemaCanonicalization_ArrayItems(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"properties": map[string]any{
+			"servers": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"properties": map[string]any{
+						"Host": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	values := map[string]any{
+		"servers": []any{
+			map[string]any{"host": "a"},
+			map[string]any{"HOST": "b"},
+		},
+	}
+	got := canonicalizeSchemaKeys(values, schema)
+	items, ok := got["servers"].([]any)
+	require.True(t, ok)
+	require.Len(t, items, 2)
+	first, ok := items[0].(map[string]any)
+	require.True(t, ok)
+	second, ok := items[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "a", first["Host"])
+	assert.Equal(t, "b", second["Host"])
+}
+
+func TestSchemaCanonicalization_PatternPropertiesNotRenamed(t *testing.T) {
+	t.Parallel()
+
+	// patternProperties are dynamic; only "properties" keys get canonicalized.
+	schema := map[string]any{
+		"patternProperties": map[string]any{
+			"^x-": map[string]any{"type": "string"},
+		},
+	}
+	values := map[string]any{
+		"x-Custom": "value",
+		"X-Custom": "other",
+	}
+	got := canonicalizeSchemaKeys(values, schema)
+	// Both keys survive unchanged because canonicalize only looks at "properties".
+	assert.Equal(t, "value", got["x-Custom"])
+	assert.Equal(t, "other", got["X-Custom"])
+}
+
+func TestApplySchemaDefaults_NoLongerLowercases(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{
+		"properties": map[string]any{
+			"apiVersion": map[string]any{
+				"type":    "string",
+				"default": "v1",
+			},
+		},
+	}
+	values := map[string]any{}
+	got := applySchemaDefaults(values, schema)
+	// Default must be stored under the schema's declared casing, not lowercased.
+	assert.Equal(t, "v1", got["apiVersion"])
+	_, hasLower := got["apiversion"]
+	assert.False(t, hasLower, "lowercase variant must not be added")
 }

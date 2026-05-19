@@ -5,7 +5,7 @@ A realistic setup: **YAML defaults**, **`WEBAPP_*` environment overrides**, **st
 ## What it shows
 
 - Layered sources -- `WithFile` first, then `WithEnv` (later source wins on conflicts)
-- Deeply nested YAML matching nested struct tags (`server.read.timeout`, etc.)
+- Deeply nested YAML matching nested struct tags (`server.tls.cert.file`, etc.)
 - Direct key access with dot paths (`cfg.String("server.host")`)
 - Struct-level validation via the [`synthra.Validator`](https://pkg.go.dev/gopherly.dev/synthra#Validator) interface
 - Tests for env-only, YAML-only, layered precedence, and validation failures
@@ -29,17 +29,6 @@ source examples/webapp/setup_env.sh
 cd examples/webapp && go run .
 ```
 
-## How environment variables map to keys
-
-Strip the `WEBAPP_` prefix, split on `_`, lowercase.
-
-| Variable | Config key |
-|----------|------------|
-| `WEBAPP_SERVER_PORT` | `server.port` |
-| `WEBAPP_SERVER_READ_TIMEOUT` | `server.read.timeout` |
-| `WEBAPP_DATABASE_PRIMARY_HOST` | `database.primary.host` |
-| `WEBAPP_FEATURES_DEBUG_MODE` | `features.debug.mode` |
-
 ## Production-style construction
 
 ```go
@@ -55,6 +44,33 @@ if err := cfg.Load(ctx); err != nil {
     log.Fatal(err)
 }
 ```
+
+## Baking defaults into the binary
+
+To embed defaults directly in the binary instead of shipping a separate `config.yaml`, prepend `synthra.WithContent` as the lowest-priority source:
+
+```go
+cfg := synthra.MustNew(
+    synthra.WithContent(defaultYAML, codec.YAML), // lowest priority
+    synthra.WithFile("config.yaml"),               // overrides defaults
+    synthra.WithEnv("WEBAPP_"),                    // highest priority
+    synthra.WithBinding(&appConfig),
+)
+```
+
+The same merge rules apply: each source overrides keys from all earlier sources.
+
+## How environment variables map to keys
+
+Strip the `WEBAPP_` prefix, split on `_`, lowercase.
+
+| Variable | Config key |
+|----------|------------|
+| `WEBAPP_SERVER_PORT` | `server.port` |
+| `WEBAPP_SERVER_TLS_ENABLED` | `server.tls.enabled` |
+| `WEBAPP_DATABASE_PRIMARY_HOST` | `database.primary.host` |
+| `WEBAPP_AUTH_JWT_SECRET` | `auth.jwt.secret` |
+| `WEBAPP_FEATURES_DEBUG_MODE` | `features.debug.mode` |
 
 ## Docker (optional)
 

@@ -1,0 +1,4 @@
+# Base config uses mixed casing — a common typo in real projects.
+ApiVersion: v1
+logLevel: info
+service: api

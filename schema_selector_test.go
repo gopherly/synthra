@@ -33,18 +33,18 @@ func schemaForVersion(version string) []byte {
 	case "v1":
 		return []byte(`{
 			"type": "object",
-			"required": ["apiversion"],
+			"required": ["apiVersion"],
 			"properties": {
-				"apiversion": {"type": "string"},
+				"apiVersion": {"type": "string"},
 				"port":       {"type": "integer", "default": 8080}
 			}
 		}`)
 	case "v2":
 		return []byte(`{
 			"type": "object",
-			"required": ["apiversion"],
+			"required": ["apiVersion"],
 			"properties": {
-				"apiversion": {"type": "string"},
+				"apiVersion": {"type": "string"},
 				"port":       {"type": "integer", "default": 9090},
 				"log_level":  {"type": "string",  "default": "debug"}
 			}
@@ -54,16 +54,16 @@ func schemaForVersion(version string) []byte {
 	}
 }
 
-// versionSelector is a reusable selector that maps the "apiversion" key to
+// versionSelector is a reusable selector that maps the "apiVersion" key to
 // the correct schema bytes using schemaForVersion above.
-func versionSelector(values map[string]any) ([]byte, error) {
-	ver, ok := values["apiversion"].(string)
-	if !ok || ver == "" {
-		return nil, errors.New("apiversion is required")
+func versionSelector(v *Values) ([]byte, error) {
+	ver := v.StringOr("apiVersion", "")
+	if ver == "" {
+		return nil, errors.New("apiVersion is required")
 	}
 	schema := schemaForVersion(ver)
 	if schema == nil {
-		return nil, errors.New("unknown apiversion: " + ver)
+		return nil, errors.New("unknown apiVersion: " + ver)
 	}
 	return schema, nil
 }
@@ -79,22 +79,22 @@ func TestWithJSONSchemaFunc_NilRejected(t *testing.T) {
 func TestWithJSONSchemaFunc_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	var selectorGotValues map[string]any
+	var selectorGotVersion string
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v1",
+			"apiVersion": "v1",
 		})),
-		WithJSONSchemaFunc(func(values map[string]any) ([]byte, error) {
-			selectorGotValues = values
-			return versionSelector(values)
+		WithJSONSchemaFunc(func(v *Values) ([]byte, error) {
+			selectorGotVersion = v.StringOr("apiVersion", "")
+			return versionSelector(v)
 		}),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
 
 	// Selector received the merged values.
-	assert.Equal(t, "v1", selectorGotValues["apiversion"])
+	assert.Equal(t, "v1", selectorGotVersion)
 
 	// Schema default for v1 (port=8080) applied.
 	port, err := cfg.Int("port")
@@ -118,7 +118,7 @@ func TestWithJSONSchemaFunc_SelectsCorrectSchemaByVersion(t *testing.T) {
 
 			cfg, err := New(
 				WithSource(source.NewMap(map[string]any{
-					"apiversion": tc.version,
+					"apiVersion": tc.version,
 				})),
 				WithJSONSchemaFunc(versionSelector),
 			)
@@ -145,7 +145,7 @@ func TestWithJSONSchemaFunc_SelectorErrorAbortsLoad(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ *Values) ([]byte, error) {
 			return nil, sentinel
 		}),
 	)
@@ -166,7 +166,7 @@ func TestWithJSONSchemaFunc_InvalidSchemaBytesAbortsLoad(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ *Values) ([]byte, error) {
 			return []byte(`not valid json`), nil
 		}),
 	)
@@ -186,7 +186,7 @@ func TestWithJSONSchemaFunc_UnknownVersionReturnsDescriptiveError(t *testing.T) 
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v99",
+			"apiVersion": "v99",
 		})),
 		WithJSONSchemaFunc(versionSelector),
 	)
@@ -194,7 +194,7 @@ func TestWithJSONSchemaFunc_UnknownVersionReturnsDescriptiveError(t *testing.T) 
 
 	loadErr := cfg.Load(context.Background())
 	require.Error(t, loadErr)
-	assert.Contains(t, loadErr.Error(), "unknown apiversion")
+	assert.Contains(t, loadErr.Error(), "unknown apiVersion")
 }
 
 func TestWithJSONSchemaFunc_DefaultsFromSelectedSchema(t *testing.T) {
@@ -203,7 +203,7 @@ func TestWithJSONSchemaFunc_DefaultsFromSelectedSchema(t *testing.T) {
 	// v2 schema has defaults for both port and log_level.
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v2",
+			"apiVersion": "v2",
 		})),
 		WithJSONSchemaFunc(versionSelector),
 	)
@@ -224,7 +224,7 @@ func TestWithJSONSchemaFunc_UserValueOverridesSchemaDefault(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v1",
+			"apiVersion": "v1",
 			"port":       7777,
 		})),
 		WithJSONSchemaFunc(versionSelector),
@@ -245,14 +245,14 @@ func TestWithJSONSchemaFunc_TransformRunsAfterSchema(t *testing.T) {
 	// transform uppercases the result.
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v2",
+			"apiVersion": "v2",
 		})),
 		WithJSONSchemaFunc(versionSelector),
-		WithTransform(func(values map[string]any) (map[string]any, error) {
-			if v, ok := values["log_level"].(string); ok {
-				values["log_level"] = strings.ToUpper(v)
+		WithTransform(func(v *Values) error {
+			if level, err := v.String("log_level"); err == nil {
+				return v.Set("log_level", strings.ToUpper(level))
 			}
-			return values, nil
+			return nil
 		}),
 	)
 	require.NoError(t, err)
@@ -272,7 +272,7 @@ func TestWithJSONSchemaFunc_ValidationFailsForInvalidValue(t *testing.T) {
 	invalidSchema := []byte(`{
 		"type": "object",
 		"properties": {
-			"apiversion": {"type": "string"},
+			"apiVersion": {"type": "string"},
 			"port": {"type": "integer"}
 		},
 		"required": ["port"]
@@ -280,10 +280,10 @@ func TestWithJSONSchemaFunc_ValidationFailsForInvalidValue(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v1",
+			"apiVersion": "v1",
 			"port":       "not-an-integer",
 		})),
-		WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ *Values) ([]byte, error) {
 			return invalidSchema, nil
 		}),
 	)
@@ -303,7 +303,7 @@ func TestWithJSONSchemaFunc_ConcurrentLoadIsSafe(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"apiversion": "v1",
+			"apiVersion": "v1",
 		})),
 		WithJSONSchemaFunc(versionSelector),
 	)
@@ -330,11 +330,11 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 
 	partialSchema := []byte(`{
 		"type": "object",
-		"required": ["apiversion"]
+		"required": ["apiVersion"]
 	}`)
 	fullSchema := []byte(`{
 		"type": "object",
-		"required": ["apiversion", "port"],
+		"required": ["apiVersion", "port"],
 		"properties": {
 			"port": {"type": "integer"}
 		}
@@ -344,11 +344,11 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 		t.Parallel()
 		cfg, err := New(
 			WithSource(source.NewMap(map[string]any{
-				"apiversion": "v1",
+				"apiVersion": "v1",
 				"port":       8080,
 			})),
-			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return partialSchema, nil }),
-			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return fullSchema, nil }),
+			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return fullSchema, nil }),
 		)
 		require.NoError(t, err)
 		require.NoError(t, cfg.Load(context.Background()))
@@ -358,11 +358,11 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 		t.Parallel()
 		cfg, err := New(
 			WithSource(source.NewMap(map[string]any{
-				// missing apiversion — fails first schema
+				// missing apiVersion — fails first schema
 				"port": 8080,
 			})),
-			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return partialSchema, nil }),
-			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return fullSchema, nil }),
+			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return fullSchema, nil }),
 		)
 		require.NoError(t, err)
 		loadErr := cfg.Load(context.Background())
@@ -376,11 +376,11 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 		t.Parallel()
 		cfg, err := New(
 			WithSource(source.NewMap(map[string]any{
-				"apiversion": "v1",
+				"apiVersion": "v1",
 				// missing port — passes partialSchema, fails fullSchema
 			})),
-			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return partialSchema, nil }),
-			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return fullSchema, nil }),
+			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return fullSchema, nil }),
 		)
 		require.NoError(t, err)
 		loadErr := cfg.Load(context.Background())

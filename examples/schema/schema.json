@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/app-config.json",
+  "type": "object",
+  "required": ["service"],
+  "additionalProperties": false,
+  "properties": {
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Service name. Required, no default."
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "default": 8080,
+      "description": "HTTP port. Defaults to 8080 when not specified."
+    },
+    "logLevel": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"],
+      "default": "info",
+      "description": "Log level. Defaults to info when not specified."
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout": {
+          "type": "string",
+          "default": "30s",
+          "description": "Request timeout. Defaults to 30s."
+        },
+        "maxConnections": {
+          "type": "integer",
+          "default": 100,
+          "description": "Maximum concurrent connections. Defaults to 100."
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "description": "Named deployable components.",
+      "patternProperties": {
+        "^[a-z0-9-]+$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "string",
+              "description": "Container image."
+            },
+            "role": {
+              "type": "string",
+              "enum": ["service", "worker", "job"],
+              "default": "service",
+              "description": "Component role. Defaults to service."
+            },
+            "replicas": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "description": "Number of replicas. Defaults to 1."
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

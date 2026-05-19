@@ -1,0 +1,3 @@
+# Override file uses canonical camelCase casing.
+apiVersion: v2
+logLevel: warn

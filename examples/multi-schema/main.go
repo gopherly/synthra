@@ -93,7 +93,7 @@ func main() {
 		// Step 1 — validate raw environments block before substitution.
 		// This schema requires "environments" to be present and structurally
 		// valid even before ${VAR} placeholders are expanded.
-		synthra.WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
 			return environmentsSchema, nil
 		}),
 
@@ -103,7 +103,7 @@ func main() {
 		// Step 3 — validate the fully-substituted manifest against the
 		// complete schema, which includes "service" (may have been a
 		// placeholder before substitution).
-		synthra.WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
 			return manifestSchema, nil
 		}),
 	)

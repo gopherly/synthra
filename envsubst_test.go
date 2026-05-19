@@ -132,21 +132,23 @@ func TestWithEnvSubst_LayeredPriority(t *testing.T) {
 			"port": "${PORT:-3000}",
 			"host": "${HOST}",
 		})),
+		// First match wins: APP_PORT=9999 takes priority over the middle map's
+		// PORT=5000, which itself takes priority over the defaults map.
 		WithEnvSubst(
-			FromMap(map[string]string{"PORT": "3000", "HOST": "default.local"}),
-			FromMap(map[string]string{"PORT": "5000"}),
-			FromEnv().Prefix("APP_"),
+			FromEnv().Prefix("APP_"). // highest: APP_*
+							Or(FromMap(map[string]string{"PORT": "5000"})).                          // middle
+							Or(FromMap(map[string]string{"PORT": "3000", "HOST": "default.local"})), // lowest
 		),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
 
-	// APP_PORT=9999 wins (Prefix("APP_") is highest priority)
+	// APP_PORT=9999 wins (first match, highest priority)
 	port, err := cfg.String("port")
 	require.NoError(t, err)
 	assert.Equal(t, "9999", port)
 
-	// HOST is only in the first FromMap, no APP_HOST or second FromMap override
+	// HOST is only in the lowest-priority map; falls through to it
 	host, err := cfg.String("host")
 	require.NoError(t, err)
 	assert.Equal(t, "default.local", host)
@@ -270,21 +272,59 @@ func TestWithEnvSubst_UnknownVarWithEmptyDefault(t *testing.T) {
 	assert.Equal(t, "/var//config", path)
 }
 
-func TestWithEnvSubst_NoResolvers_DefaultsToOSEnv(t *testing.T) {
-	t.Setenv("SYNTHRA_NO_RESOLVER_VAR", "from-os")
+func TestWithEnvSubst_NilResolverErrors(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(
+		WithSource(source.NewMap(map[string]any{})),
+		WithEnvSubst(nil),
+	)
+	require.Error(t, err)
+
+	var ce *ConfigError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, OpNew, ce.Op)
+	assert.Equal(t, "WithEnvSubst", ce.Path)
+}
+
+func TestWithEnvSubst_EmptyStringIsFound(t *testing.T) {
+	t.Parallel()
+
+	// A resolver that returns ("", true) for VAR is "found" even though the
+	// value is empty. The Or chain must stop there — the fallback resolver must
+	// NOT be consulted.
+	//
+	// Note: ${VAR:-default} is POSIX "if unset OR empty", so the underlying
+	// envsubst library will still substitute the default even when the resolver
+	// returns ("", true). The short-circuit guarantee of Or is that no further
+	// resolver in the chain is called — not that the envsubst :-default syntax
+	// is suppressed. To observe that, we use bare ${VAR} (no default) so that
+	// the expansion simply produces "".
+	explicit := Resolver(func(name string) (string, bool) {
+		if name == "VAR" {
+			return "", true
+		}
+		return "", false
+	})
+	// fallback would return "from-fallback" if it were ever called
+	fallback := FromMap(map[string]string{"VAR": "from-fallback"})
+
+	r := explicit.Or(fallback)
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"val": "${SYNTHRA_NO_RESOLVER_VAR}",
+			"val": "${VAR}", // bare expansion — no :-default
 		})),
-		WithEnvSubst(), // no resolvers → defaults to FromEnv()
+		WithEnvSubst(r),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
 
 	val, err := cfg.String("val")
 	require.NoError(t, err)
-	assert.Equal(t, "from-os", val)
+	// If Or had fallen through to fallback, val would be "from-fallback".
+	// "" confirms Or short-circuited at the explicit resolver.
+	assert.Equal(t, "", val)
 }
 
 func TestWithEnvSubst_WorksWithSchemaDefaults(t *testing.T) {
@@ -508,8 +548,8 @@ func TestWithEnvSubst_ErrorIndexWhenCombinedWithTransform(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"host": "${MISSING_COMBINED_VAR}",
 		})),
-		WithTransform(func(values map[string]any) (map[string]any, error) {
-			return values, nil
+		WithTransform(func(_ *Values) error {
+			return nil
 		}),
 		WithEnvSubst(FromMap(map[string]string{})),
 	)
@@ -586,7 +626,7 @@ func TestWithEnvSubstFunc_Success(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"greeting": "hello ${NAME}",
 		})),
-		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
 			return FromMap(map[string]string{"NAME": "world"}), nil
 		}),
 	)
@@ -607,7 +647,7 @@ func TestWithEnvSubstFunc_CallbackError(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"val": "${X}",
 		})),
-		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
 			return nil, sentinel
 		}),
 	)
@@ -634,12 +674,17 @@ func TestWithEnvSubstFunc_DynamicEnvFile(t *testing.T) {
 			"envfile": envPath,
 			"cluster": "${REGION}-cluster",
 		})),
-		WithEnvSubstFunc(func(values map[string]any) (Resolver, error) {
-			path, ok := values["envfile"].(string)
-			if !ok || path == "" {
+		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+			path := v.StringOr("envfile", "")
+			if path == "" {
 				return FromEnv(), nil
 			}
-			return FromEnvFile(path)
+			envFile, err := FromEnvFile(path)
+			if err != nil {
+				return nil, err
+			}
+			// Compose: OS env takes priority, .env file is the fallback.
+			return FromEnv().Or(envFile), nil
 		}),
 	)
 	require.NoError(t, err)
@@ -648,6 +693,36 @@ func TestWithEnvSubstFunc_DynamicEnvFile(t *testing.T) {
 	cluster, err := cfg.String("cluster")
 	require.NoError(t, err)
 	assert.Equal(t, "eu-west-1-cluster", cluster)
+}
+
+func TestWithEnvSubstFunc_DynamicEnvFile_OSEnvTakesPriority(t *testing.T) {
+	// OS env overrides the .env file value when composed with Or.
+	t.Setenv("REGION", "us-east-1")
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(envPath, []byte("REGION=eu-west-1\n"), 0o600))
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"envfile": envPath,
+			"cluster": "${REGION}-cluster",
+		})),
+		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+			envFile, err := FromEnvFile(v.StringOr("envfile", ""))
+			if err != nil {
+				return nil, err
+			}
+			return FromEnv().Or(envFile), nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	cluster, err := cfg.String("cluster")
+	require.NoError(t, err)
+	// OS env (us-east-1) wins over .env file (eu-west-1)
+	assert.Equal(t, "us-east-1-cluster", cluster)
 }
 
 func TestWithEnvSubstFunc_ReceivesCurrentValues(t *testing.T) {
@@ -660,8 +735,8 @@ func TestWithEnvSubstFunc_ReceivesCurrentValues(t *testing.T) {
 			"env":  "production",
 			"host": "${HOST}",
 		})),
-		WithEnvSubstFunc(func(values map[string]any) (Resolver, error) {
-			gotValues = values
+		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+			gotValues = v.Raw()
 			return FromMap(map[string]string{"HOST": "api.example.com"}), nil
 		}),
 	)
@@ -699,7 +774,7 @@ func TestWithEnvSubstFunc_ErrorWrappedAsConfigError(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"val": "${X}",
 		})),
-		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
 			return nil, fmt.Errorf("setup: %w", errors.New("connection refused"))
 		}),
 	)

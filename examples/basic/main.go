@@ -35,7 +35,6 @@ type Config struct {
 	Date    time.Time     `synthra:"date"`
 	Roles   []string      `synthra:"roles"`
 	Types   []string      `synthra:"types"`
-	Types2  string        `synthra:"types"`
 }
 
 // Worker is the worker configuration.

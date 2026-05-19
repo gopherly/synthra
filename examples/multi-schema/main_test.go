@@ -33,11 +33,11 @@ func buildCfg(t *testing.T, yamlContent []byte, vars map[string]string) (*synthr
 	}
 	return synthra.New(
 		synthra.WithFileFS(fsys, "manifest.yaml"),
-		synthra.WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
 			return environmentsSchema, nil
 		}),
 		synthra.WithEnvSubst(synthra.FromMap(vars)),
-		synthra.WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
 			return manifestSchema, nil
 		}),
 	)
@@ -150,6 +150,6 @@ environments:
 
 	env, ok := envs[0].(map[string]any)
 	require.True(t, ok)
-	// envFile key is normalized to lowercase by synthra.
-	assert.Equal(t, ".env", env["envfile"])
+	// envFile key matches the schema's canonical casing.
+	assert.Equal(t, ".env", env["envFile"])
 }

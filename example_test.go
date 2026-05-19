@@ -251,9 +251,9 @@ func ExampleWithValidator() {
 
 	cfg, err := synthra.New(
 		synthra.WithContent(yamlContent, codec.YAML),
-		synthra.WithValidator(func(cfgMap map[string]any) error {
+		synthra.WithValidator(func(v *synthra.Values) error {
 			// Custom validation logic
-			if _, ok := cfgMap["name"]; !ok {
+			if !v.Has("name") {
 				return fmt.Errorf("name is required")
 			}
 			return nil
@@ -269,6 +269,31 @@ func ExampleWithValidator() {
 
 	fmt.Println("Validation passed")
 	// Output: Validation passed
+}
+
+// ExampleWithJSONSchema validates the merged configuration against a JSON
+// Schema. Load fails fast if required keys are missing or values have the
+// wrong type.
+func ExampleWithJSONSchema() {
+	schema := []byte(`{
+		"type": "object",
+		"required": ["service", "port"],
+		"properties": {
+			"service": {"type": "string", "minLength": 1},
+			"port":    {"type": "integer", "minimum": 1, "maximum": 65535}
+		}
+	}`)
+
+	cfg := synthra.MustNew(
+		synthra.WithContent([]byte("service: api\nport: 8080\n"), codec.YAML),
+		synthra.WithJSONSchema(schema),
+	)
+	if err := cfg.Load(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("service=%s port=%d\n", exampleString(cfg, "service"), exampleInt(cfg, "port"))
+	// Output: service=api port=8080
 }
 
 // ExampleSynthra_Get demonstrates retrieving configuration values.

@@ -154,6 +154,12 @@ func setDefaultValue(field reflect.Value, defaultVal string) error {
 
 // getDecoderConfig returns a cached decoder configuration to reduce
 // reflection overhead.
+//
+// mapstructure's default field-matching function is [strings.EqualFold], so
+// it is already case-insensitive. Keys canonicalized by canonicalizeSchemaKeys
+// (or preserved as-is when no schema is present) flow naturally into struct
+// fields regardless of casing differences between the config source and the
+// struct tag.
 func (c *Synthra) getDecoderConfig() *mapstructure.DecoderConfig {
 	c.decoderOnce.Do(func() {
 		tagName := c.tagName

@@ -164,69 +164,81 @@ func TestResolverPrefix(t *testing.T) {
 	})
 }
 
-func TestChainResolvers(t *testing.T) {
-	t.Run("last resolver wins", func(t *testing.T) {
-		r := chainResolvers(
-			FromMap(map[string]string{"PORT": "3000"}),
-			FromMap(map[string]string{"PORT": "8080"}),
-		)
+func TestResolverOr(t *testing.T) {
+	t.Run("receiver wins when it finds the key", func(t *testing.T) {
+		r := FromMap(map[string]string{"PORT": "3000"}).
+			Or(FromMap(map[string]string{"PORT": "8080"}))
+		val, ok := r("PORT")
+		assert.True(t, ok)
+		assert.Equal(t, "3000", val)
+	})
+
+	t.Run("falls through to fallback when receiver not found", func(t *testing.T) {
+		r := FromMap(map[string]string{"HOST": "primary"}).
+			Or(FromMap(map[string]string{"PORT": "8080"}))
 		val, ok := r("PORT")
 		assert.True(t, ok)
 		assert.Equal(t, "8080", val)
 	})
 
-	t.Run("falls back to earlier resolver", func(t *testing.T) {
-		r := chainResolvers(
-			FromMap(map[string]string{"PORT": "3000"}),
-			FromMap(map[string]string{"HOST": "localhost"}),
-		)
-		val, ok := r("PORT")
-		assert.True(t, ok)
-		assert.Equal(t, "3000", val)
-	})
-
 	t.Run("not found when no resolver has the key", func(t *testing.T) {
-		r := chainResolvers(
-			FromMap(map[string]string{"PORT": "3000"}),
-			FromMap(map[string]string{"HOST": "localhost"}),
-		)
+		r := FromMap(map[string]string{"PORT": "3000"}).
+			Or(FromMap(map[string]string{"HOST": "localhost"}))
 		val, ok := r("MISSING")
 		assert.False(t, ok)
 		assert.Empty(t, val)
 	})
 
-	t.Run("no resolvers returns not found", func(t *testing.T) {
-		r := chainResolvers()
-		val, ok := r("PORT")
-		assert.False(t, ok)
-		assert.Empty(t, val)
-	})
-
-	t.Run("nil resolver in chain is skipped", func(t *testing.T) {
-		r := chainResolvers(
-			FromMap(map[string]string{"PORT": "3000"}),
-			nil,
-			FromMap(map[string]string{"HOST": "localhost"}),
-		)
+	t.Run("Or with no fallbacks returns receiver unchanged", func(t *testing.T) {
+		base := FromMap(map[string]string{"PORT": "3000"})
+		r := base.Or()
 		val, ok := r("PORT")
 		assert.True(t, ok)
 		assert.Equal(t, "3000", val)
 	})
 
-	t.Run("three-layer priority: map, map, os prefix", func(t *testing.T) {
-		t.Setenv("APP_PORT", "9999")
-		r := chainResolvers(
-			FromMap(map[string]string{"PORT": "3000", "HOST": "default"}),
-			FromMap(map[string]string{"PORT": "5000"}),
-			FromEnv().Prefix("APP_"),
-		)
+	t.Run("nil fallback in list is skipped", func(t *testing.T) {
+		r := FromMap(map[string]string{"HOST": "primary"}).
+			Or(nil, FromMap(map[string]string{"PORT": "8080"}))
+		val, ok := r("PORT")
+		assert.True(t, ok)
+		assert.Equal(t, "8080", val)
+	})
 
-		// APP_PORT is set, Prefix("APP_") wins
+	t.Run("nil receiver is safe, falls through to fallback", func(t *testing.T) {
+		r := Resolver(nil).Or(FromMap(map[string]string{"PORT": "9090"}))
+		val, ok := r("PORT")
+		assert.True(t, ok)
+		assert.Equal(t, "9090", val)
+	})
+
+	t.Run("empty string is found and stops the chain", func(t *testing.T) {
+		// A resolver that explicitly returns ("", true) must short-circuit;
+		// the fallback must not be consulted.
+		explicit := Resolver(func(name string) (string, bool) {
+			if name == "VAR" {
+				return "", true
+			}
+			return "", false
+		})
+		r := explicit.Or(FromMap(map[string]string{"VAR": "from-fallback"}))
+		val, ok := r("VAR")
+		assert.True(t, ok)
+		assert.Equal(t, "", val) // fallback must not have overridden it
+	})
+
+	t.Run("three-layer priority (first wins): os-prefix > env-file > defaults", func(t *testing.T) {
+		t.Setenv("APP_PORT", "9999")
+		defaults := FromMap(map[string]string{"PORT": "3000", "HOST": "default"})
+		middle := FromMap(map[string]string{"PORT": "5000"})
+		r := FromEnv().Prefix("APP_").Or(middle).Or(defaults)
+
+		// APP_PORT=9999 is set, Prefix("APP_") wins
 		val, ok := r("PORT")
 		assert.True(t, ok)
 		assert.Equal(t, "9999", val)
 
-		// HOST is only in the first FromMap
+		// HOST is only in defaults, not in middle or APP_*
 		val, ok = r("HOST")
 		assert.True(t, ok)
 		assert.Equal(t, "default", val)
@@ -234,6 +246,26 @@ func TestChainResolvers(t *testing.T) {
 		// MISSING is not in any resolver
 		_, ok = r("MISSING")
 		assert.False(t, ok)
+	})
+
+	t.Run("composition with Prefix", func(t *testing.T) {
+		t.Setenv("APP_HOST", "os.example.com")
+		envMap := FromMap(map[string]string{"APP_HOST": "map.example.com"})
+		r := FromEnv().Prefix("APP_").Or(envMap.Prefix("APP_"))
+
+		// OS env has APP_HOST → wins
+		val, ok := r("HOST")
+		assert.True(t, ok)
+		assert.Equal(t, "os.example.com", val)
+	})
+
+	t.Run("second fallback reached when first fallback also misses", func(t *testing.T) {
+		r := FromMap(map[string]string{}).
+			Or(FromMap(map[string]string{})).
+			Or(FromMap(map[string]string{"KEY": "found"}))
+		val, ok := r("KEY")
+		assert.True(t, ok)
+		assert.Equal(t, "found", val)
 	})
 }
 

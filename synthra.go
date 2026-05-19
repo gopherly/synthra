@@ -40,6 +40,7 @@ type config struct {
 	sources          []Source
 	dumpers          []Dumper
 	binding          any
+	bindingHooks     []func(any) error
 	tagName          string
 	steps            []step
 	validationErrors []error
@@ -53,13 +54,14 @@ type config struct {
 // Load, Get, and Dump.
 // Synthra is safe for concurrent use by multiple goroutines.
 type Synthra struct {
-	values  *map[string]any
-	sources []Source
-	dumpers []Dumper
-	binding any
-	tagName string // Custom struct tag name (default: "synthra")
-	steps   []step
-	mu      sync.RWMutex
+	values       *map[string]any
+	sources      []Source
+	dumpers      []Dumper
+	binding      any
+	bindingHooks []func(any) error
+	tagName      string // Custom struct tag name (default: "synthra")
+	steps        []step
+	mu           sync.RWMutex
 	// decoderConfig holds the cached decoder configuration for struct binding
 	decoderConfig *mapstructure.DecoderConfig
 	decoderOnce   sync.Once
@@ -84,12 +86,13 @@ func defaultConfig() *config {
 // configFromConfig builds a Synthra from a validated config.
 func configFromConfig(cfg *config) *Synthra {
 	return &Synthra{
-		values:  &map[string]any{},
-		sources: cfg.sources,
-		dumpers: cfg.dumpers,
-		binding: cfg.binding,
-		tagName: cfg.tagName,
-		steps:   cfg.steps,
+		values:       &map[string]any{},
+		sources:      cfg.sources,
+		dumpers:      cfg.dumpers,
+		binding:      cfg.binding,
+		bindingHooks: cfg.bindingHooks,
+		tagName:      cfg.tagName,
+		steps:        cfg.steps,
 	}
 }
 
@@ -148,37 +151,31 @@ func MustNew(opts ...Option) *Synthra {
 	return cfg
 }
 
-// deepMerge merges src into dst recursively, overriding dst values with src
-// values. Nested maps are merged in place; all other types replace the dst
-// value outright.
+// deepMerge merges src into dst recursively. When both dst and src have a map
+// value for the same key (matched case-insensitively), the maps are merged
+// recursively and the first writer's key casing is kept. For all other value
+// types the src value overrides the dst value under the existing dst key.
 func deepMerge(dst, src map[string]any) {
-	for k, srcVal := range src {
-		if srcMap, ok := srcVal.(map[string]any); ok {
-			if dstMap, dstOk := dst[k].(map[string]any); dstOk {
+	for srcKey, srcVal := range src {
+		dstKey := findKeyFold(dst, srcKey)
+		if dstKey == "" {
+			if srcMap, ok := srcVal.(map[string]any); ok {
+				nested := make(map[string]any)
+				deepMerge(nested, srcMap)
+				dst[srcKey] = nested
+			} else {
+				dst[srcKey] = srcVal
+			}
+			continue
+		}
+		if srcMap, srcIsMap := srcVal.(map[string]any); srcIsMap {
+			if dstMap, dstIsMap := dst[dstKey].(map[string]any); dstIsMap {
 				deepMerge(dstMap, srcMap)
 				continue
 			}
 		}
-		dst[k] = srcVal
+		dst[dstKey] = srcVal
 	}
-}
-
-// normalizeMapKeys recursively converts all map keys to lowercase for
-// case-insensitive merging
-func normalizeMapKeys(m map[string]any) map[string]any {
-	if m == nil {
-		return nil
-	}
-	normalized := make(map[string]any)
-	for k, v := range m {
-		lowerKey := strings.ToLower(k)
-		if nestedMap, ok := v.(map[string]any); ok {
-			normalized[lowerKey] = normalizeMapKeys(nestedMap)
-		} else {
-			normalized[lowerKey] = v
-		}
-	}
-	return normalized
 }
 
 // loadSourcesSequential loads configuration data from all sources
@@ -205,10 +202,7 @@ func (c *Synthra) loadSourcesSequential(ctx context.Context) (map[string]any, er
 			conf = make(map[string]any)
 		}
 
-		// Normalize keys to lowercase for case-insensitive merging
-		normalizedConf := normalizeMapKeys(conf)
-
-		deepMerge(newValues, normalizedConf)
+		deepMerge(newValues, conf)
 	}
 
 	return newValues, nil
@@ -272,6 +266,11 @@ func (c *Synthra) Load(ctx context.Context) error {
 		}
 		if bindErr := applyDefaults(tempBinding); bindErr != nil {
 			return NewConfigError(OpLoad, "binding-defaults", bindErr)
+		}
+		for i, hook := range c.bindingHooks {
+			if hookErr := hook(tempBinding); hookErr != nil {
+				return NewConfigError(OpLoad, fmt.Sprintf("binding-hook[%d]", i), hookErr)
+			}
 		}
 		if v, ok := tempBinding.(Validator); ok {
 			if validateErr := v.Validate(); validateErr != nil {
@@ -344,9 +343,8 @@ func (c *Synthra) Values() *map[string]any {
 
 // getValueFromMap retrieves the value associated with the given path from
 // the internal values map. The path is a dot-separated string that
-// represents the nested structure of the map. If the path is valid and
-// the final value is found, it is returned. Otherwise, nil is returned.
-// Keys are case-insensitive since they are stored in lowercase.
+// represents the nested structure of the map. Lookup is case-insensitive
+// at each segment using findKeyFold.
 func (c *Synthra) getValueFromMap(path string) any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -355,38 +353,36 @@ func (c *Synthra) getValueFromMap(path string) any {
 		return nil
 	}
 
-	// Work with a copy of the current map to avoid race conditions during traversal
 	current := *c.values
 
-	// Normalize the path to lowercase for case-insensitive lookup
-	normalizedPath := strings.ToLower(path)
-
-	// 1. Check for direct key match first
-	if val, ok := current[normalizedPath]; ok {
-		return val
+	// 1. Check for a direct (top-level) key match first. This handles the
+	// uncommon case where a key itself contains a literal dot.
+	if k := findKeyFold(current, path); k != "" {
+		return current[k]
 	}
 
-	// 2. Fallback to dot notation traversal.
-	// Navigate every segment except the last into the nested maps, then
-	// return the final segment's value. strings.Split always returns at
-	// least one element so the final lookup is always executed.
-	segments := strings.Split(normalizedPath, ".")
+	// 2. Fallback to dot-notation traversal. Navigate every segment except
+	// the last into the nested maps, then return the final segment's value.
+	segments := strings.Split(path, ".")
+	if len(segments) == 1 {
+		return nil // already checked above
+	}
 	for _, segment := range segments[:len(segments)-1] {
-		val, ok := current[segment]
-		if !ok {
+		k := findKeyFold(current, segment)
+		if k == "" {
 			return nil
 		}
-		nested, isMap := val.(map[string]any)
+		nested, isMap := current[k].(map[string]any)
 		if !isMap {
 			return nil
 		}
 		current = nested
 	}
-	val, ok := current[segments[len(segments)-1]]
-	if !ok {
+	k := findKeyFold(current, segments[len(segments)-1])
+	if k == "" {
 		return nil
 	}
-	return val
+	return current[k]
 }
 
 // requireValue returns the raw value at key for strict typed accessors and [Get].

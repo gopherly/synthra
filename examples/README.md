@@ -4,29 +4,25 @@ Runnable programs that complement the shorter snippets in [example_test.go](../e
 
 ## Progression
 
-Start at the top and work down -- each example builds on concepts from the previous ones.
+Start at the top and work down. Each example builds on concepts from the previous ones.
 
 | Directory | What it shows |
 |-----------|---------------|
 | [basic](./basic/) | YAML file + struct binding |
-| [environment](./environment/) | Environment-only config |
-| [webapp](./webapp/) | YAML defaults + `WEBAPP_*` overrides + binding + `Validate` |
-| [jsonschema](./jsonschema/) | `WithJSONSchema` validation on a file |
-| [customvalidator](./customvalidator/) | `WithValidator` cross-field rule |
-| [dump](./dump/) | `WithFileDumperAs` + `Dump` of merged state |
-| [defaults](./defaults/) | `WithContent` defaults, then file, then env |
-| [formats](./formats/) | `WithFileAs` with JSON + TOML |
-| [consul](./consul/) | `WithIf(..., WithConsul(...))` (no Consul required for tests) |
+| [webapp](./webapp/) | YAML defaults + `WEBAPP_*` env overrides + binding + `Validate` |
 | [testing](./testing/) | `synthratest.Config` + `source.NewMap` in tests |
+| [schema](./schema/) | `WithJSONSchema` validation + schema `default` values + `patternProperties` |
+| [casing](./casing/) | Case-insensitive merge, schema as canonical key-casing authority |
+| [hooks](./hooks/) | `WithTransform`, `WithValidator`, and `OnBound[T]` in one pipeline |
+| [codecs](./codecs/) | `WithFileAs` (JSON, TOML) + `WithFileDumperAs` (YAML dump) |
+| [envsubst-layered](./envsubst-layered/) | Three-layer `Resolver.Or` precedence for `${VAR}` lookups |
+| [multi-schema](./multi-schema/) | Two-phase `WithJSONSchemaFunc` around `WithEnvSubst` |
+| [consul](./consul/) | `WithIf(..., WithConsul(...))` conditional source |
 
 ## Quick start
 
 ```bash
 cd examples/basic && go run .
-cd examples/environment && WEBAPP_SERVER_HOST=localhost WEBAPP_SERVER_PORT=8080 \
-  WEBAPP_DATABASE_PRIMARY_HOST=db WEBAPP_DATABASE_PRIMARY_PORT=5432 \
-  WEBAPP_DATABASE_PRIMARY_DATABASE=myapp WEBAPP_AUTH_JWT_SECRET=secret \
-  WEBAPP_FEATURES_DEBUG_MODE=true go run .
 cd examples/webapp && go run .
 ```
 
@@ -48,10 +44,6 @@ docker run --rm synthra-webapp-example
 ```
 
 The image uses the Go version pinned in [Dockerfile](./Dockerfile) (aligned with [go.mod](../go.mod)).
-
-## Environment variable naming
-
-Examples use explicit prefixes (`WEBAPP_`, `APP_`, `EDGE_`, `DEMO_`). Strip the prefix, split on `_`, lowercase, and nest: `WEBAPP_SERVER_READ_TIMEOUT` becomes `server.read.timeout`.
 
 ## Adding a new example
 

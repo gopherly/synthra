@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["apiVersion", "service"],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "enum": ["v1", "v2"],
+      "description": "Schema version. The schema is the canonical authority for key casing."
+    },
+    "logLevel": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"],
+      "default": "info",
+      "description": "Log level. Defaults to info."
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Service name."
+    }
+  },
+  "additionalProperties": false
+}

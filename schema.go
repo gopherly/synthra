@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"math/rand"
 	"regexp"
-	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -39,9 +38,10 @@ func applySchemaDefaults(values, schema map[string]any) map[string]any {
 				continue
 			}
 
-			// Normalize the key to lowercase so it matches the keys produced
-			// by normalizeMapKeys during source loading.
-			key := strings.ToLower(rawKey)
+			// canonicalizeSchemaKeys (called before applySchemaDefaults in
+			// schemaStep.run) already aligned key casing to the schema, so
+			// rawKey matches the key in values as-is.
+			key := rawKey
 
 			existing, exists := values[key]
 			if !exists {

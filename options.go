@@ -16,10 +16,11 @@ package synthra
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
-	"reflect"
 
+	"github.com/fluxcd/pkg/envsubst"
 	"gopherly.dev/synthra/codec"
 	"gopherly.dev/synthra/dumper"
 	"gopherly.dev/synthra/source"
@@ -375,8 +376,30 @@ func WithFileDumperAs(path string, encoder codec.Encoder) Option {
 	}
 }
 
-// WithBinding returns an Option that configures the Synthra instance to
-// bind configuration data to a struct. The target must be a non-nil pointer.
+// BindingOption is the constraint type for options that may appear inside
+// [WithBinding]. The T parameter ties each option to the bound target type
+// so the compiler enforces alignment between the target and any hook.
+//
+// T appears in the [bindingConfig] parameter of applyToBinding so that two
+// BindingOption instantiations with different T are distinct interfaces at
+// compile time, not just at the type-checker. Without that, a method set
+// independent of T would let BindingOption[App] satisfy BindingOption[Server]
+// silently and the type-mismatch check would only happen at Load time.
+type BindingOption[T any] interface {
+	applyToBinding(b *bindingConfig[T])
+}
+
+// bindingConfig collects what [BindingOption] values apply at construction.
+// It is package-internal; users see BindingOption[T] only through its public
+// constructors. The generic parameter binds the configured hooks to the
+// target type chosen by [WithBinding].
+type bindingConfig[T any] struct {
+	hooks []func(*T) error
+}
+
+// WithBinding registers target as the destination for struct decoding and
+// accepts binding-scoped options. T is inferred from target; every option
+// passed must share the same T, which the compiler enforces.
 //
 // Example:
 //
@@ -390,21 +413,74 @@ func WithFileDumperAs(path string, encoder codec.Encoder) Option {
 //	var appCfg Config
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithBinding(&appCfg),
+//	    synthra.WithBinding(&appCfg,
+//	        synthra.OnBound(func(c *Config) error {
+//	            c.Server.Host = strings.ToLower(c.Server.Host)
+//	            return nil
+//	        }),
+//	    ),
 //	)
 //	fmt.Println(appCfg.Server.Port) // populated from config
-func WithBinding(v any) Option {
+func WithBinding[T any](target *T, opts ...BindingOption[T]) Option {
 	return func(cfg *config) {
-		if v == nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithBinding", errors.New("binding target cannot be nil")))
+		if target == nil {
+			cfg.validationErrors = append(cfg.validationErrors,
+				NewConfigError(OpNew, "WithBinding", errors.New("binding target cannot be nil")))
 			return
 		}
-		if reflect.TypeOf(v).Kind() != reflect.Pointer {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithBinding", errors.New("binding target must be a pointer")))
-			return
+		bc := &bindingConfig[T]{}
+		for _, opt := range opts {
+			opt.applyToBinding(bc)
 		}
-		cfg.binding = v
+		cfg.binding = target
+		// Adapt the typed hooks into the untyped storage shape used by Load.
+		// The defensive *T assertion can only fail if a caller stores a hook
+		// from a different type's bindingConfig — impossible through the
+		// public API since BindingOption[T] now genuinely depends on T.
+		cfg.bindingHooks = make([]func(any) error, 0, len(bc.hooks))
+		for _, h := range bc.hooks {
+			cfg.bindingHooks = append(cfg.bindingHooks, func(target any) error {
+				t, ok := target.(*T)
+				if !ok {
+					return fmt.Errorf("OnBound: unexpected target type %T", target)
+				}
+				return h(t)
+			})
+		}
 	}
+}
+
+// OnBound registers a function that runs against the bound struct after
+// decode and applyDefaults, but before [Validator.Validate].
+//
+// Use OnBound for type-safe normalization — lowercasing log levels,
+// computing derived fields, applying region-based defaults. For map-level
+// work before binding, use [WithTransform].
+//
+// The function must not be nil. Multiple OnBound hooks run in registration
+// order; the first error stops the pipeline.
+func OnBound[T any](fn func(*T) error) BindingOption[T] {
+	return onBoundOption[T]{fn: fn}
+}
+
+type onBoundOption[T any] struct {
+	fn func(*T) error
+}
+
+// Compile-time check: onBoundOption satisfies BindingOption.
+var _ BindingOption[struct{}] = onBoundOption[struct{}]{}
+
+func (o onBoundOption[T]) applyToBinding(b *bindingConfig[T]) { //nolint:unused
+	if o.fn == nil {
+		// Defer the nil-check to Load so it surfaces as a typed *ConfigError
+		// with the binding-hook[N] path, matching how nil functions are
+		// reported elsewhere in the pipeline.
+		b.hooks = append(b.hooks, func(_ *T) error {
+			return errors.New("OnBound: function cannot be nil")
+		})
+		return
+	}
+	b.hooks = append(b.hooks, o.fn)
 }
 
 // WithTag sets a custom struct tag name for binding (default: "synthra").
@@ -497,7 +573,7 @@ func WithJSONSchema(schema []byte) Option {
 }
 
 // WithJSONSchemaFunc registers a dynamic schema resolver as a pipeline step.
-// The selector is called during [Synthra.Load] with the current values map and
+// The selector is called during [Synthra.Load] with the current [*Values] and
 // returns the JSON Schema bytes to use at that point in the pipeline. This
 // enables the schema to be chosen based on a value already present in the
 // config — for example an apiVersion field — without requiring a two-pass read.
@@ -522,9 +598,9 @@ func WithJSONSchema(schema []byte) Option {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("deployah.yaml"),
-//	    synthra.WithJSONSchemaFunc(func(values map[string]any) ([]byte, error) {
-//	        version, ok := values["apiversion"].(string)
-//	        if !ok || version == "" {
+//	    synthra.WithJSONSchemaFunc(func(v *synthra.Values) ([]byte, error) {
+//	        version := v.StringOr("apiVersion", "")
+//	        if version == "" {
 //	            return nil, errors.New("apiVersion is required")
 //	        }
 //	        return schema.GetManifestSchema(version)
@@ -539,19 +615,23 @@ func WithJSONSchema(schema []byte) Option {
 //	    synthra.WithEnvSubst(synthra.FromEnv()),         // substitute variables
 //	    synthra.WithJSONSchemaFunc(manifestSchema),     // validate substituted manifest
 //	)
-func WithJSONSchemaFunc(selector func(map[string]any) ([]byte, error)) Option {
+func WithJSONSchemaFunc(selector func(*Values) ([]byte, error)) Option {
 	return func(cfg *config) {
 		if selector == nil {
 			cfg.validationErrors = append(cfg.validationErrors,
 				NewConfigError(OpNew, "WithJSONSchemaFunc", errors.New("selector cannot be nil")))
 			return
 		}
-		cfg.steps = append(cfg.steps, &schemaStep{selector: selector})
+		cfg.steps = append(cfg.steps, &schemaStep{
+			selector: func(m map[string]any) ([]byte, error) {
+				return selector(newValues(m))
+			},
+		})
 	}
 }
 
 // WithValidator adds a custom validation function as a pipeline step. It runs
-// a read-only check against the current values map at the point in the pipeline
+// a read-only check against the current [*Values] at the point in the pipeline
 // where it was registered. Multiple validators run in registration order; the
 // first error stops the pipeline.
 //
@@ -566,20 +646,257 @@ func WithJSONSchemaFunc(selector func(map[string]any) ([]byte, error)) Option {
 //
 //	cfg, err := synthra.New(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithValidator(func(m map[string]any) error {
-//	        port, _ := m["port"].(int)
+//	    synthra.WithValidator(func(v *synthra.Values) error {
+//	        port := v.IntOr("port", 0)
 //	        if port < 1 || port > 65535 {
 //	            return fmt.Errorf("port %d out of range", port)
 //	        }
 //	        return nil
 //	    }),
 //	)
-func WithValidator(fn func(map[string]any) error) Option {
+func WithValidator(fn func(*Values) error) Option {
 	return func(cfg *config) {
 		if fn == nil {
 			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithValidator", errors.New("validator cannot be nil")))
 			return
 		}
-		cfg.steps = append(cfg.steps, &validatorStep{fn: fn})
+		cfg.steps = append(cfg.steps, &validatorStep{fn: func(m map[string]any) error {
+			return fn(newValues(m))
+		}})
 	}
+}
+
+// WithTransform registers a function that transforms the configuration values
+// as a pipeline step. The transform runs at the point in the pipeline where it
+// was registered, after any preceding steps have completed.
+//
+// The function receives the current [*Values] and mutates it in place.
+// Returning an error aborts Load with a [*ConfigError] whose Path identifies
+// the failing step by its index and kind ("step[0]:transform",
+// "step[1]:transform", ...).
+//
+// Multiple transforms are applied in registration order.
+//
+// Example — normalize log level to lowercase, then validate with a schema:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithTransform(func(v *synthra.Values) error {
+//	        if level, err := v.String("log_level"); err == nil {
+//	            return v.Set("log_level", strings.ToLower(level))
+//	        }
+//	        return nil
+//	    }),
+//	    synthra.WithJSONSchema(schema),
+//	)
+func WithTransform(fn func(*Values) error) Option {
+	return func(cfg *config) {
+		if fn == nil {
+			cfg.validationErrors = append(cfg.validationErrors,
+				NewConfigError(OpNew, "WithTransform", errors.New("transform function cannot be nil")))
+			return
+		}
+		cfg.steps = append(cfg.steps, &transformStep{
+			fn: func(m map[string]any) (map[string]any, error) {
+				v := newValues(m)
+				if err := fn(v); err != nil {
+					return nil, err
+				}
+				return v.m, nil
+			},
+		})
+	}
+}
+
+// WithEnvSubst registers a transform that expands POSIX-style ${VAR}
+// placeholders in all string values of the merged configuration map.
+//
+// The resolver argument must not be nil. To consult multiple sources,
+// compose them with [Resolver.Or] — the first Resolver that reports found
+// wins (highest priority first):
+//
+//	synthra.FromEnv().Prefix("APP_").Or(envFile).Or(synthra.FromMap(defaults))
+//
+// Supported syntax includes ${VAR}, ${VAR:-default}, ${VAR:=default},
+// ${VAR^^}, ${VAR#pattern}, and more. The full set is documented at
+// https://pkg.go.dev/github.com/fluxcd/pkg/envsubst.
+//
+// This is different from [WithEnv]. [WithEnv] is a source: it reads
+// environment variables and adds them as configuration keys. For
+// example, APP_SERVER_PORT=8080 becomes server.port in the config
+// map. [WithEnvSubst] is a transform: it expands ${VAR} placeholders
+// that appear inside string values already loaded from other sources.
+// Both can be used together without overlap.
+//
+// Example — OS environment only:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubst(synthra.FromEnv()),
+//	)
+//
+// Example — expand placeholders using a static map:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubst(synthra.FromMap(map[string]string{
+//	        "ENV":  "production",
+//	        "PORT": "8080",
+//	    })),
+//	)
+//	// If config.yaml contains: host: "app-${ENV}.example.com"
+//	// After Load: cfg.Get("host") => "app-production.example.com"
+//
+// Example — three-layer priority with Or (highest priority first):
+//
+//	envFile, err := synthra.FromEnvFile(".env")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("deployah.yaml"),
+//	    synthra.WithEnvSubst(
+//	        synthra.FromEnv().Prefix("DPY_VAR_").  // highest: prefixed OS env
+//	            Or(envFile).                         // middle:  .env file
+//	            Or(synthra.FromMap(manifestVars)),   // lowest:  static defaults
+//	    ),
+//	)
+//	// config.yaml: port: ${PORT:-3000}
+//	// If DPY_VAR_PORT=9090 is set, port becomes "9090".
+//	// If DPY_VAR_PORT is not set but PORT is in the .env file, that wins.
+//	// If neither is set, the ${VAR:-default} fallback gives "3000".
+func WithEnvSubst(r Resolver) Option {
+	return func(cfg *config) {
+		if r == nil {
+			cfg.validationErrors = append(cfg.validationErrors,
+				NewConfigError(OpNew, "WithEnvSubst", errors.New("resolver cannot be nil")))
+			return
+		}
+		cfg.steps = append(cfg.steps, &transformStep{fn: func(values map[string]any) (map[string]any, error) {
+			v := newValues(values)
+			if err := envsubstMap(v.m, r, ""); err != nil {
+				return nil, fmt.Errorf("envsubst: %w", err)
+			}
+			return v.m, nil
+		}})
+	}
+}
+
+// WithEnvSubstFunc expands ${VAR} placeholders using a [Resolver] that is
+// determined dynamically at Load time. The callback receives the current
+// [*Values] and returns a Resolver (or an error that stops the pipeline).
+//
+// This follows the same pattern as [WithJSONSchemaFunc]: the Func suffix
+// means "the input to this step is determined at Load time from the
+// current values." Use this when the resolver depends on values that are
+// only known after sources are merged — for example, a .env file path
+// that is itself stored in the config file.
+//
+// The function must not be nil.
+//
+// Example — .env file path specified in config:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubstFunc(func(v *synthra.Values) (synthra.Resolver, error) {
+//	        envPath := v.StringOr("envfile", "")
+//	        if envPath == "" {
+//	            return synthra.FromEnv(), nil
+//	        }
+//	        return synthra.FromEnvFile(envPath)
+//	    }),
+//	)
+//
+// Example — Vault resolver with setup that may fail:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubstFunc(func(_ *synthra.Values) (synthra.Resolver, error) {
+//	        client, err := vault.NewClient(vault.DefaultConfig())
+//	        if err != nil {
+//	            return nil, fmt.Errorf("vault client: %w", err)
+//	        }
+//	        return func(name string) (string, bool) {
+//	            secret, err := client.Read("secret/data/" + name)
+//	            if err != nil || secret == nil {
+//	                return "", false
+//	            }
+//	            v, ok := secret.Data["value"].(string)
+//	            return v, ok
+//	        }, nil
+//	    }),
+//	)
+func WithEnvSubstFunc(fn func(*Values) (Resolver, error)) Option {
+	return func(cfg *config) {
+		if fn == nil {
+			cfg.validationErrors = append(cfg.validationErrors,
+				NewConfigError(OpNew, "WithEnvSubstFunc", errors.New("resolver function cannot be nil")))
+			return
+		}
+		cfg.steps = append(cfg.steps, &transformStep{fn: func(values map[string]any) (map[string]any, error) {
+			v := newValues(values)
+			resolver, err := fn(v)
+			if err != nil {
+				return nil, fmt.Errorf("envsubst: %w", err)
+			}
+			err = envsubstMap(v.m, resolver, "")
+			if err != nil {
+				return nil, fmt.Errorf("envsubst: %w", err)
+			}
+			return v.m, nil
+		}})
+	}
+}
+
+// envsubstMap recursively walks values and expands ${VAR} placeholders
+// in all string values using the mapping function. The prefix
+// accumulates the dotted path for error messages.
+func envsubstMap(values map[string]any, mapping func(string) (string, bool), prefix string) error {
+	for k, v := range values {
+		path := prefix + k
+		switch val := v.(type) {
+		case string:
+			expanded, err := envsubst.Eval(val, mapping)
+			if err != nil {
+				return fmt.Errorf("key %q: %w", path, err)
+			}
+			values[k] = expanded
+		case map[string]any:
+			if err := envsubstMap(val, mapping, path+"."); err != nil {
+				return err
+			}
+		case []any:
+			if err := envsubstSlice(val, mapping, path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// envsubstSlice applies envsubst expansion to every element in a slice,
+// recursing into nested maps and slices. The prefix is the parent key
+// path; indices are appended as [N].
+func envsubstSlice(slice []any, mapping func(string) (string, bool), prefix string) error {
+	for i, elem := range slice {
+		path := fmt.Sprintf("%s[%d]", prefix, i)
+		switch val := elem.(type) {
+		case string:
+			expanded, err := envsubst.Eval(val, mapping)
+			if err != nil {
+				return fmt.Errorf("key %q: %w", path, err)
+			}
+			slice[i] = expanded
+		case map[string]any:
+			if err := envsubstMap(val, mapping, path+"."); err != nil {
+				return err
+			}
+		case []any:
+			if err := envsubstSlice(val, mapping, path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

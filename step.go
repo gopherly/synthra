@@ -45,6 +45,7 @@ func (s *schemaStep) run(values map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	values = canonicalizeSchemaKeys(values, raw)
 	values = applySchemaDefaults(values, raw)
 	if validationErr := compiled.Validate(values); validationErr != nil {
 		return nil, validationErr

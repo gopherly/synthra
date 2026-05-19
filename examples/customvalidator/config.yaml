@@ -1,9 +1,0 @@
-server:
-  host: "127.0.0.1"
-  port: 8443
-  tls:
-    enabled: true
-    cert:
-      file: "/etc/ssl/certs/server.crt"
-    key:
-      file: "/etc/ssl/private/server.key"
