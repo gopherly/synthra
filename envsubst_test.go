@@ -18,11 +18,14 @@ package synthra
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopherly.dev/synthra/resolve"
 	"gopherly.dev/synthra/source"
 )
 
@@ -34,7 +37,7 @@ func TestWithEnvSubst_VarsResolver(t *testing.T) {
 			"envFile": ".env.${NAME}",
 			"cluster": "${REGION}-cluster",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"NAME":   "production",
 			"REGION": "eu-west-1",
 		})),
@@ -58,7 +61,7 @@ func TestWithEnvSubst_DefaultFallback(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"port": "${PORT:-3000}",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -75,7 +78,7 @@ func TestWithEnvSubst_DefaultFallbackOverriddenByVar(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"port": "${PORT:-3000}",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"PORT": "9090",
 		})),
 	)
@@ -94,7 +97,7 @@ func TestWithEnvSubst_OSResolver(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"host": "${SYNTHRA_ENVSUBST_HOST}",
 		})),
-		WithEnvSubst(resolve.OS()),
+		WithEnvSubst(FromEnv()),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -111,7 +114,7 @@ func TestWithEnvSubst_OSPrefixResolver(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"port": "${PORT}",
 		})),
-		WithEnvSubst(resolve.OSPrefix("DPY_VAR_")),
+		WithEnvSubst(FromEnv().Prefix("DPY_VAR_")),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -130,20 +133,20 @@ func TestWithEnvSubst_LayeredPriority(t *testing.T) {
 			"host": "${HOST}",
 		})),
 		WithEnvSubst(
-			resolve.Vars(map[string]string{"PORT": "3000", "HOST": "default.local"}),
-			resolve.Vars(map[string]string{"PORT": "5000"}),
-			resolve.OSPrefix("APP_"),
+			FromMap(map[string]string{"PORT": "3000", "HOST": "default.local"}),
+			FromMap(map[string]string{"PORT": "5000"}),
+			FromEnv().Prefix("APP_"),
 		),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
 
-	// APP_PORT=9999 wins (OSPrefix is highest priority)
+	// APP_PORT=9999 wins (Prefix("APP_") is highest priority)
 	port, err := cfg.String("port")
 	require.NoError(t, err)
 	assert.Equal(t, "9999", port)
 
-	// HOST is only in the first Vars, no APP_HOST or second Vars override
+	// HOST is only in the first FromMap, no APP_HOST or second FromMap override
 	host, err := cfg.String("host")
 	require.NoError(t, err)
 	assert.Equal(t, "default.local", host)
@@ -159,7 +162,7 @@ func TestWithEnvSubst_NestedMap(t *testing.T) {
 				"port": "${PORT:-8080}",
 			},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"HOST": "api",
 		})),
 	)
@@ -182,7 +185,7 @@ func TestWithEnvSubst_SliceValues(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"files": []any{".env.${NAME}", "config.${NAME}.yaml"},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"NAME": "staging",
 		})),
 	)
@@ -204,7 +207,7 @@ func TestWithEnvSubst_NestedSliceAndMapInSlice(t *testing.T) {
 				[]any{"${ENV}-node1", "${ENV}-node2"},
 			},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"ENV":  "prod",
 			"HOST": "db.prod.local",
 		})),
@@ -239,7 +242,7 @@ func TestWithEnvSubst_UnknownVarWithoutDefaultErrors(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"path": "/var/${UNKNOWN_VAR_XYZ_STRICT}/config",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -257,7 +260,7 @@ func TestWithEnvSubst_UnknownVarWithEmptyDefault(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"path": "/var/${OPTIONAL_VAR:-}/config",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -267,21 +270,21 @@ func TestWithEnvSubst_UnknownVarWithEmptyDefault(t *testing.T) {
 	assert.Equal(t, "/var//config", path)
 }
 
-func TestWithEnvSubst_NoResolvers(t *testing.T) {
-	t.Parallel()
+func TestWithEnvSubst_NoResolvers_DefaultsToOSEnv(t *testing.T) {
+	t.Setenv("SYNTHRA_NO_RESOLVER_VAR", "from-os")
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
-			"port": "8080",
+			"val": "${SYNTHRA_NO_RESOLVER_VAR}",
 		})),
-		WithEnvSubst(),
+		WithEnvSubst(), // no resolvers → defaults to FromEnv()
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
 
-	port, err := cfg.String("port")
+	val, err := cfg.String("val")
 	require.NoError(t, err)
-	assert.Equal(t, "8080", port)
+	assert.Equal(t, "from-os", val)
 }
 
 func TestWithEnvSubst_WorksWithSchemaDefaults(t *testing.T) {
@@ -298,7 +301,7 @@ func TestWithEnvSubst_WorksWithSchemaDefaults(t *testing.T) {
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{})),
 		WithJSONSchema(schema),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"NAME": "production",
 		})),
 	)
@@ -317,7 +320,7 @@ func TestWithEnvSubst_PosixUppercase(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"region": "${REGION^^}",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"REGION": "eu-west-1",
 		})),
 	)
@@ -340,7 +343,7 @@ func TestWithEnvSubst_NonStringValuesPassThrough(t *testing.T) {
 			"nothing": nil,
 			"name":    "${NAME}",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"NAME": "test",
 		})),
 	)
@@ -364,7 +367,7 @@ func TestWithEnvSubst_NonStringValuesInSlicePassThrough(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"mixed": []any{42, true, 3.14, nil, "${TAG}"},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{
+		WithEnvSubst(FromMap(map[string]string{
 			"TAG": "latest",
 		})),
 	)
@@ -389,7 +392,7 @@ func TestWithEnvSubst_ErrorInSliceStringElement(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"hosts": []any{"ok.example.com", "${MISSING_SLICE_VAR}"},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -408,7 +411,7 @@ func TestWithEnvSubst_ErrorFromNestedMapInSlice(t *testing.T) {
 				map[string]any{"dsn": "${MISSING_DSN_VAR}"},
 			},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -427,7 +430,7 @@ func TestWithEnvSubst_ErrorFromNestedSliceInSlice(t *testing.T) {
 				[]any{"${MISSING_MATRIX_VAR}"},
 			},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -448,7 +451,7 @@ func TestWithEnvSubst_ErrorFromNestedMapInMap(t *testing.T) {
 				},
 			},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -465,7 +468,7 @@ func TestWithEnvSubst_ErrorFromSliceInMap(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"tags": []any{"${MISSING_TAG_VAR}"},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -482,7 +485,7 @@ func TestWithEnvSubst_ErrorWrappedAsConfigError(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"path": "${MISSING_CFG_ERR_VAR}",
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -492,7 +495,7 @@ func TestWithEnvSubst_ErrorWrappedAsConfigError(t *testing.T) {
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
 	assert.Equal(t, OpLoad, ce.Op)
-	assert.Equal(t, "transform[0]", ce.Path)
+	assert.Equal(t, "step[0]:transform", ce.Path)
 	assert.Contains(t, ce.Err.Error(), "envsubst:")
 	assert.Contains(t, ce.Err.Error(), `key "path"`)
 	assert.Contains(t, ce.Err.Error(), "MISSING_CFG_ERR_VAR")
@@ -508,7 +511,7 @@ func TestWithEnvSubst_ErrorIndexWhenCombinedWithTransform(t *testing.T) {
 		WithTransform(func(values map[string]any) (map[string]any, error) {
 			return values, nil
 		}),
-		WithEnvSubst(resolve.Vars(map[string]string{})),
+		WithEnvSubst(FromMap(map[string]string{})),
 	)
 	require.NoError(t, err)
 
@@ -518,7 +521,7 @@ func TestWithEnvSubst_ErrorIndexWhenCombinedWithTransform(t *testing.T) {
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
 	assert.Equal(t, OpLoad, ce.Op)
-	assert.Equal(t, "transform[1]", ce.Path)
+	assert.Equal(t, "step[1]:transform", ce.Path)
 }
 
 func TestWithEnvSubst_EmptyMapInput(t *testing.T) {
@@ -526,7 +529,7 @@ func TestWithEnvSubst_EmptyMapInput(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{})),
-		WithEnvSubst(resolve.Vars(map[string]string{"KEY": "val"})),
+		WithEnvSubst(FromMap(map[string]string{"KEY": "val"})),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -539,7 +542,7 @@ func TestWithEnvSubst_EmptySliceInMap(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"items": []any{},
 		})),
-		WithEnvSubst(resolve.Vars(map[string]string{"KEY": "val"})),
+		WithEnvSubst(FromMap(map[string]string{"KEY": "val"})),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -557,7 +560,7 @@ func TestWithEnvSubst_OSReadsLiveEnv(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"val": "${SYNTHRA_LIVE_ENVSUBST}",
 		})),
-		WithEnvSubst(resolve.OS()),
+		WithEnvSubst(FromEnv()),
 	)
 	require.NoError(t, err)
 
@@ -572,4 +575,142 @@ func TestWithEnvSubst_OSReadsLiveEnv(t *testing.T) {
 	val, err = cfg.String("val")
 	require.NoError(t, err)
 	assert.Equal(t, "second", val)
+}
+
+// --- WithEnvSubstFunc tests ---
+
+func TestWithEnvSubstFunc_Success(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"greeting": "hello ${NAME}",
+		})),
+		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+			return FromMap(map[string]string{"NAME": "world"}), nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	greeting, err := cfg.String("greeting")
+	require.NoError(t, err)
+	assert.Equal(t, "hello world", greeting)
+}
+
+func TestWithEnvSubstFunc_CallbackError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("resolver setup failed")
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"val": "${X}",
+		})),
+		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+			return nil, sentinel
+		}),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+	assert.ErrorIs(t, loadErr, sentinel)
+
+	var ce *ConfigError
+	require.ErrorAs(t, loadErr, &ce)
+	assert.Equal(t, OpLoad, ce.Op)
+	assert.Equal(t, "step[0]:transform", ce.Path)
+}
+
+func TestWithEnvSubstFunc_DynamicEnvFile(t *testing.T) {
+	// Write a .env file to a temp dir.
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env.production")
+	require.NoError(t, os.WriteFile(envPath, []byte("REGION=eu-west-1\n"), 0o600))
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"envfile": envPath,
+			"cluster": "${REGION}-cluster",
+		})),
+		WithEnvSubstFunc(func(values map[string]any) (Resolver, error) {
+			path, ok := values["envfile"].(string)
+			if !ok || path == "" {
+				return FromEnv(), nil
+			}
+			return FromEnvFile(path)
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	cluster, err := cfg.String("cluster")
+	require.NoError(t, err)
+	assert.Equal(t, "eu-west-1-cluster", cluster)
+}
+
+func TestWithEnvSubstFunc_ReceivesCurrentValues(t *testing.T) {
+	t.Parallel()
+
+	var gotValues map[string]any
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"env":  "production",
+			"host": "${HOST}",
+		})),
+		WithEnvSubstFunc(func(values map[string]any) (Resolver, error) {
+			gotValues = values
+			return FromMap(map[string]string{"HOST": "api.example.com"}), nil
+		}),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	// The callback received the merged values map.
+	require.NotNil(t, gotValues)
+	assert.Equal(t, "production", gotValues["env"])
+
+	host, err := cfg.String("host")
+	require.NoError(t, err)
+	assert.Equal(t, "api.example.com", host)
+}
+
+func TestWithEnvSubstFunc_NilFuncErrors(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(
+		WithSource(source.NewMap(map[string]any{})),
+		WithEnvSubstFunc(nil),
+	)
+	require.Error(t, err)
+
+	var ce *ConfigError
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, OpNew, ce.Op)
+	assert.Equal(t, "WithEnvSubstFunc", ce.Path)
+}
+
+func TestWithEnvSubstFunc_ErrorWrappedAsConfigError(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"val": "${X}",
+		})),
+		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+			return nil, fmt.Errorf("setup: %w", errors.New("connection refused"))
+		}),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+
+	var ce *ConfigError
+	require.ErrorAs(t, loadErr, &ce)
+	assert.Equal(t, OpLoad, ce.Op)
+	assert.Contains(t, ce.Err.Error(), "envsubst:")
+	assert.Contains(t, ce.Err.Error(), "connection refused")
 }

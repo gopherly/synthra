@@ -34,14 +34,16 @@
 //   - Multiple configuration sources (files, [io/fs.FS], environment variables,
 //     Consul)
 //   - Automatic format detection and decoding (JSON, YAML, TOML)
+//   - Pipeline processing: schema steps, transforms, and validators are
+//     executed in registration order, enabling multi-phase workflows
 //   - JSON Schema defaults: "default" values declared in the schema are
 //     automatically applied to missing keys, including patternProperties
-//   - Dynamic schema selection ([WithJSONSchemaSelector]) for version-based or
+//   - Dynamic schema selection ([WithJSONSchemaFunc]) for version-based or
 //     content-based schema routing at Load time
-//   - Post-load transforms ([WithTransform]) and POSIX-style variable
-//     substitution ([WithEnvSubst]) run before validation
-//   - Composable variable resolvers ([gopherly.dev/synthra/resolve]) for
-//     maps, OS environment variables, and prefixed env vars
+//   - POSIX-style variable substitution ([WithEnvSubst]) and arbitrary
+//     transforms ([WithTransform]) can be interleaved with schema steps
+//   - Composable variable resolvers ([FromMap], [FromEnv], [FromEnvFile]) for
+//     maps, OS env, and .env files; prefix stripping via [Resolver.Prefix]
 //   - Struct binding with automatic type conversion
 //   - Validation using JSON Schema or custom validators
 //   - Case-insensitive key access with dot notation
@@ -171,12 +173,34 @@
 //	)
 //	// If config.yaml omits "port", Load sets it to 8080 before validating.
 //
-// Use [WithJSONSchemaSelector] when the schema to use depends on a value inside
-// the config itself — for example an apiVersion field:
+// # Pipeline
+//
+// After all sources are merged, Synthra executes pipeline steps in the order
+// they were registered. Steps are added by:
+//
+//   - [WithJSONSchema] — validates against a static schema and applies its
+//     declared default values.
+//   - [WithJSONSchemaFunc] — same as [WithJSONSchema] but the schema bytes are
+//     returned by a callback that receives the current values map. Use this when
+//     the schema depends on a value inside the config (e.g. an apiVersion field).
+//   - [WithTransform] — arbitrary map mutation step.
+//   - [WithEnvSubst] — convenience transform that expands ${VAR} placeholders
+//     using one or more [Resolver] values. Defaults to [FromEnv] (OS env) when
+//     called with no arguments.
+//   - [WithEnvSubstFunc] — same as [WithEnvSubst] but the Resolver is built by
+//     a callback at Load time. Use this when the resolver depends on a value
+//     already loaded from a source (e.g. a .env file path in the config file).
+//   - [WithValidator] — read-only check that may return an error.
+//
+// Because steps run in registration order, you can interleave them freely.
+// A common pattern is two-phase validation: validate partial data before
+// substitution, substitute, then validate the final form.
+//
+// Example — dynamic schema selection based on apiVersion:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("manifest.yaml"),
-//	    synthra.WithJSONSchemaSelector(func(values map[string]any) ([]byte, error) {
+//	    synthra.WithJSONSchemaFunc(func(values map[string]any) ([]byte, error) {
 //	        version, ok := values["apiversion"].(string)
 //	        if !ok || version == "" {
 //	            return nil, errors.New("apiVersion is required")
@@ -184,19 +208,22 @@
 //	        return schemaRegistry.Get(version)
 //	    }),
 //	)
-//	// The selector is called at Load time with the merged values, so it can
-//	// branch on any config value. The selected schema applies defaults and
-//	// validates exactly like WithJSONSchema. WithJSONSchema and
-//	// WithJSONSchemaSelector are mutually exclusive.
 //
-// # Transforms and Variable Substitution
+// Example — two-phase validation (validate before and after substitution):
 //
-// [WithTransform] registers a function that processes the merged values after
-// schema defaults and before validation. Multiple transforms run as a pipeline.
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("manifest.yaml"),
+//	    // Step 1: validate the raw "environments" block before substitution.
+//	    synthra.WithJSONSchemaFunc(environmentsSchema),
+//	    // Step 2: expand ${VAR} placeholders.
+//	    synthra.WithEnvSubst(synthra.FromEnv()),
+//	    // Step 3: validate the fully-substituted manifest.
+//	    synthra.WithJSONSchemaFunc(manifestSchema),
+//	)
 //
-// [WithEnvSubst] is a convenience transform that expands POSIX-style ${VAR}
-// placeholders in all string values. It supports the full POSIX substitution
-// syntax: ${VAR:-default}, ${VAR:=default}, ${VAR^^}, ${VAR#pattern}, and more.
+// Multiple [WithJSONSchema] and [WithJSONSchemaFunc] calls are fully supported
+// and each adds an independent schema step at the point it was registered. There
+// is no mutual-exclusivity restriction.
 //
 // [WithEnv] and [WithEnvSubst] solve different problems and work well together:
 //
@@ -205,33 +232,20 @@
 //   - [WithEnvSubst] is a transform. It expands ${VAR} placeholders that are
 //     already present in string values loaded from files or other sources.
 //
-// Example — expand ${ENV} from a static map:
-//
-//	cfg := synthra.MustNew(
-//	    synthra.WithFile("config.yaml"),
-//	    synthra.WithJSONSchema(schema),
-//	    synthra.WithEnvSubst(resolve.Vars(map[string]string{
-//	        "ENV":    "production",
-//	        "REGION": "eu-west-1",
-//	    })),
-//	)
-//	// If config.yaml has: envFile: ".env.${ENV}"
-//	// After Load: cfg.Get("envfile") => ".env.production"
-//
 // Example — layer multiple resolvers (last wins):
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("deployah.yaml"),
 //	    synthra.WithEnvSubst(
-//	        resolve.Vars(manifestVars),    // lowest priority
-//	        resolve.Vars(envFileVars),     // medium priority
-//	        resolve.OSPrefix("DPY_VAR_"),  // highest priority
+//	        synthra.FromMap(manifestVars),       // lowest priority
+//	        synthra.FromMap(envFileVars),        // medium priority
+//	        synthra.FromEnv().Prefix("DPY_VAR_"),   // highest priority
 //	    ),
 //	)
 //	// config.yaml: port: ${PORT:-3000}
 //	// If DPY_VAR_PORT=9090 is set in the environment, port becomes "9090".
 //
-// Example — custom transform to normalize values:
+// Example — custom transform to normalize values before schema validation:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
@@ -241,7 +255,7 @@
 //	        }
 //	        return values, nil
 //	    }),
-//	    synthra.WithJSONSchema(schema),
+//	    synthra.WithJSONSchema(schema), // validates the normalized values
 //	)
 //
 // Validate using custom functions:
@@ -255,6 +269,9 @@
 //	        return nil
 //	    }),
 //	)
+//
+// Error paths for pipeline failures follow the pattern "step[N]:kind" where N
+// is the zero-based step index and kind is "schema", "transform", or "validator".
 //
 // # Accessing Configuration Values
 //
@@ -384,6 +401,7 @@
 //   - examples/webapp — layered YAML + env, binding, and Validate
 //   - examples/jsonschema — JSON Schema validation
 //   - examples/jsonschema-defaults — JSON Schema defaults and WithEnvSubst
+//   - examples/multi-schema — two-phase validation with WithJSONSchemaFunc
 //   - examples/customvalidator — custom validation functions
 //   - examples/dump — configuration dumping
 //   - examples/consul — optional Consul integration

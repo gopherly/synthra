@@ -19,23 +19,22 @@ import (
 	"fmt"
 
 	"github.com/fluxcd/pkg/envsubst"
-	"gopherly.dev/synthra/resolve"
 )
 
-// WithTransform registers a function that transforms the merged configuration
-// values during Load. Transforms run after JSON Schema defaults are applied
-// and before JSON Schema validation, in the order they were registered. This
-// means the schema validator sees the final, transformed values.
+// WithTransform registers a function that transforms the configuration values
+// as a pipeline step. The transform runs at the point in the pipeline where it
+// was registered, after any preceding steps have completed.
 //
 // The function receives the current values map and must return the (possibly
 // modified) values map. Returning a nil map is treated as an empty map.
 // Returning an error aborts Load with a [*ConfigError] whose Path identifies
-// the failing transform by its index ("transform[0]", "transform[1]", ...).
+// the failing step by its index and kind ("step[0]:transform",
+// "step[1]:transform", ...).
 //
-// Multiple transforms are applied as a pipeline: the output of transform N
-// becomes the input of transform N+1.
+// Multiple transforms are applied in registration order: the output of each
+// step becomes the input of the next.
 //
-// Example — normalize log level to lowercase before validation:
+// Example — normalize log level to lowercase, then validate with a schema:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
@@ -54,7 +53,7 @@ func WithTransform(fn func(map[string]any) (map[string]any, error)) Option {
 				NewConfigError(OpNew, "WithTransform", errors.New("transform function cannot be nil")))
 			return
 		}
-		cfg.transforms = append(cfg.transforms, fn)
+		cfg.steps = append(cfg.steps, &transformStep{fn: fn})
 	}
 }
 
@@ -63,7 +62,7 @@ func WithTransform(fn func(map[string]any) (map[string]any, error)) Option {
 //
 // Resolvers are consulted in order. When more than one resolver knows
 // the same variable name, the last one wins (highest priority last).
-// Use [resolve.Chain] to pre-compose resolvers if needed.
+// Called with no arguments, it defaults to [FromEnv] (OS environment).
 //
 // Supported syntax includes ${VAR}, ${VAR:-default}, ${VAR:=default},
 // ${VAR^^}, ${VAR#pattern}, and more. The full set is documented at
@@ -76,11 +75,18 @@ func WithTransform(fn func(map[string]any) (map[string]any, error)) Option {
 // that appear inside string values already loaded from other sources.
 // Both can be used together without overlap.
 //
+// Example — simplest case (OS env):
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubst(),
+//	)
+//
 // Example — expand placeholders using a static map:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvSubst(resolve.Vars(map[string]string{
+//	    synthra.WithEnvSubst(synthra.FromMap(map[string]string{
 //	        "ENV":  "production",
 //	        "PORT": "8080",
 //	    })),
@@ -93,23 +99,92 @@ func WithTransform(fn func(map[string]any) (map[string]any, error)) Option {
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("deployah.yaml"),
 //	    synthra.WithEnvSubst(
-//	        resolve.Vars(manifestVars),    // lowest priority
-//	        resolve.Vars(envFileVars),     // medium priority
-//	        resolve.OSPrefix("DPY_VAR_"),  // highest priority
+//	        synthra.FromMap(manifestVars),    // lowest priority
+//	        synthra.FromMap(envFileVars),     // medium priority
+//	        synthra.FromEnv().Prefix("DPY_VAR_"), // highest priority
 //	    ),
 //	)
 //	// config.yaml: port: ${PORT:-3000}
 //	// If DPY_VAR_PORT=9090 is set, port becomes "9090".
 //	// If DPY_VAR_PORT is not set but PORT is in envFileVars, that wins.
 //	// If neither is set, the ${VAR:-default} fallback gives "3000".
-func WithEnvSubst(resolvers ...resolve.Resolver) Option {
-	merged := resolve.Chain(resolvers...)
+func WithEnvSubst(resolvers ...Resolver) Option {
+	if len(resolvers) == 0 {
+		resolvers = []Resolver{FromEnv()}
+	}
+	merged := chainResolvers(resolvers...)
 	return WithTransform(func(values map[string]any) (map[string]any, error) {
 		if err := envsubstMap(values, merged, ""); err != nil {
 			return nil, fmt.Errorf("envsubst: %w", err)
 		}
 		return values, nil
 	})
+}
+
+// WithEnvSubstFunc expands ${VAR} placeholders using a [Resolver] that is
+// determined dynamically at Load time. The callback receives the current
+// merged values map and returns a Resolver (or an error that stops the
+// pipeline).
+//
+// This follows the same pattern as [WithJSONSchemaFunc]: the Func suffix
+// means "the input to this step is determined at Load time from the
+// current values." Use this when the resolver depends on values that are
+// only known after sources are merged — for example, a .env file path
+// that is itself stored in the config file.
+//
+// The function must not be nil.
+//
+// Example — .env file path specified in config:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubstFunc(func(values map[string]any) (synthra.Resolver, error) {
+//	        envPath, _ := values["envfile"].(string)
+//	        if envPath == "" {
+//	            return synthra.FromEnv(), nil
+//	        }
+//	        return synthra.FromEnvFile(envPath)
+//	    }),
+//	)
+//
+// Example — Vault resolver with setup that may fail:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubstFunc(func(_ map[string]any) (synthra.Resolver, error) {
+//	        client, err := vault.NewClient(vault.DefaultConfig())
+//	        if err != nil {
+//	            return nil, fmt.Errorf("vault client: %w", err)
+//	        }
+//	        return func(name string) (string, bool) {
+//	            secret, err := client.Read("secret/data/" + name)
+//	            if err != nil || secret == nil {
+//	                return "", false
+//	            }
+//	            v, ok := secret.Data["value"].(string)
+//	            return v, ok
+//	        }, nil
+//	    }),
+//	)
+func WithEnvSubstFunc(fn func(map[string]any) (Resolver, error)) Option {
+	return func(cfg *config) {
+		if fn == nil {
+			cfg.validationErrors = append(cfg.validationErrors,
+				NewConfigError(OpNew, "WithEnvSubstFunc", errors.New("resolver function cannot be nil")))
+			return
+		}
+		cfg.steps = append(cfg.steps, &transformStep{fn: func(values map[string]any) (map[string]any, error) {
+			resolver, err := fn(values)
+			if err != nil {
+				return nil, fmt.Errorf("envsubst: %w", err)
+			}
+			err = envsubstMap(values, resolver, "")
+			if err != nil {
+				return nil, fmt.Errorf("envsubst: %w", err)
+			}
+			return values, nil
+		}})
+	}
 }
 
 // envsubstMap recursively walks values and expands ${VAR} placeholders

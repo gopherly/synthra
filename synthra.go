@@ -25,7 +25,6 @@ import (
 	"sync"
 
 	"github.com/go-viper/mapstructure/v2"
-	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // Option is a functional option that can be used to configure an Synthra instance.
@@ -38,16 +37,12 @@ type Option func(cfg *config)
 // config holds construction-time configuration. Options mutate config;
 // New() validates and builds Synthra from it.
 type config struct {
-	sources            []Source
-	dumpers            []Dumper
-	binding            any
-	tagName            string
-	jsonSchemaCompiled *jsonschema.Schema
-	jsonSchemaRaw      map[string]any // raw parsed schema for default extraction
-	jsonSchemaSelector func(map[string]any) ([]byte, error)
-	customValidators   []func(map[string]any) error
-	transforms         []func(map[string]any) (map[string]any, error)
-	validationErrors   []error
+	sources          []Source
+	dumpers          []Dumper
+	binding          any
+	tagName          string
+	steps            []step
+	validationErrors []error
 }
 
 // Synthra manages configuration data loaded from multiple sources.
@@ -58,17 +53,13 @@ type config struct {
 // Load, Get, and Dump.
 // Synthra is safe for concurrent use by multiple goroutines.
 type Synthra struct {
-	values             *map[string]any
-	sources            []Source
-	dumpers            []Dumper
-	binding            any
-	tagName            string // Custom struct tag name (default: "synthra")
-	mu                 sync.RWMutex
-	jsonSchemaCompiled *jsonschema.Schema
-	jsonSchemaRaw      map[string]any // raw parsed schema for default extraction
-	jsonSchemaSelector func(map[string]any) ([]byte, error)
-	customValidators   []func(map[string]any) error
-	transforms         []func(map[string]any) (map[string]any, error)
+	values  *map[string]any
+	sources []Source
+	dumpers []Dumper
+	binding any
+	tagName string // Custom struct tag name (default: "synthra")
+	steps   []step
+	mu      sync.RWMutex
 	// decoderConfig holds the cached decoder configuration for struct binding
 	decoderConfig *mapstructure.DecoderConfig
 	decoderOnce   sync.Once
@@ -76,11 +67,6 @@ type Synthra struct {
 
 // validate reports any errors collected during option application.
 func (cfg *config) validate() error {
-	if cfg.jsonSchemaCompiled != nil && cfg.jsonSchemaSelector != nil {
-		cfg.validationErrors = append(cfg.validationErrors,
-			NewConfigError(OpNew, "WithJSONSchemaSelector",
-				errors.New("WithJSONSchema and WithJSONSchemaSelector are mutually exclusive")))
-	}
 	if len(cfg.validationErrors) == 0 {
 		return nil
 	}
@@ -98,16 +84,12 @@ func defaultConfig() *config {
 // configFromConfig builds a Synthra from a validated config.
 func configFromConfig(cfg *config) *Synthra {
 	return &Synthra{
-		values:             &map[string]any{},
-		sources:            cfg.sources,
-		dumpers:            cfg.dumpers,
-		binding:            cfg.binding,
-		tagName:            cfg.tagName,
-		jsonSchemaCompiled: cfg.jsonSchemaCompiled,
-		jsonSchemaRaw:      cfg.jsonSchemaRaw,
-		jsonSchemaSelector: cfg.jsonSchemaSelector,
-		customValidators:   cfg.customValidators,
-		transforms:         cfg.transforms,
+		values:  &map[string]any{},
+		sources: cfg.sources,
+		dumpers: cfg.dumpers,
+		binding: cfg.binding,
+		tagName: cfg.tagName,
+		steps:   cfg.steps,
 	}
 }
 
@@ -233,31 +215,27 @@ func (c *Synthra) loadSourcesSequential(ctx context.Context) (map[string]any, er
 }
 
 // Load loads configuration data from the registered sources and merges it
-// into the internal values map. The method validates the configuration data
-// before atomically updating the internal state.
+// into the internal values map. The method executes all registered pipeline
+// steps in registration order before atomically updating the internal state.
 // Load is safe to call concurrently.
 //
 // The pipeline runs in this order:
 //  1. Load and merge all sources (later sources override earlier ones).
-//  2. If [WithJSONSchemaSelector] is set, call it with the merged values to
-//     obtain schema bytes; compile them and extract raw defaults.
-//  3. Apply JSON Schema defaults ([WithJSONSchema] or selector) to missing keys.
-//  4. Run transforms ([WithTransform], [WithInterpolation]) in registration order.
-//  5. Validate merged values against the JSON Schema.
-//  6. Run custom validators ([WithValidator]).
-//  7. Decode into the bound struct ([WithBinding]), apply struct-tag defaults,
+//  2. Execute each registered step ([WithJSONSchema], [WithJSONSchemaFunc],
+//     [WithTransform], [WithEnvSubst], [WithValidator]) in the order they
+//     were registered.
+//  3. Decode into the bound struct ([WithBinding]), apply struct-tag defaults,
 //     and call the struct's Validate method if it implements [Validator].
 //
 // Errors:
 //   - Returns [*ConfigError] with [OpLoad] if ctx is nil ([ErrNilContext])
 //   - Returns [*ConfigError] with [OpLoad] if any source fails to load or merge
-//   - Returns [*ConfigError] with [OpLoad] and Path "json-schema-selector" if the
-//     selector returns an error or the returned bytes fail to compile
-//   - Returns [*ConfigError] with [OpLoad] and Path "transform[N]" if a transform
-//     returns an error
-//   - Returns [*ConfigError] with [OpLoad] and Path "json-schema" if JSON schema
-//     validation fails
-//   - Returns [*ConfigError] with [OpLoad] if custom validators fail
+//   - Returns [*ConfigError] with [OpLoad] and Path "step[N]:schema" if a schema
+//     step's selector, compilation, or validation fails
+//   - Returns [*ConfigError] with [OpLoad] and Path "step[N]:transform" if a
+//     transform step returns an error
+//   - Returns [*ConfigError] with [OpLoad] and Path "step[N]:validator" if a
+//     validator step returns an error or panics
 //   - Returns [*ConfigError] with [OpLoad] if binding or struct validation fails
 func (c *Synthra) Load(ctx context.Context) error {
 	if ctx == nil {
@@ -269,70 +247,13 @@ func (c *Synthra) Load(ctx context.Context) error {
 		return err
 	}
 
-	// Resolve the schema for this load. For static schemas (WithJSONSchema)
-	// these are already set on c. For selector schemas (WithJSONSchemaSelector)
-	// we compute them per-load using local variables so concurrent Load calls
-	// never race on the shared Synthra fields.
-	loadSchemaCompiled := c.jsonSchemaCompiled
-	loadSchemaRaw := c.jsonSchemaRaw
-
-	if c.jsonSchemaSelector != nil {
-		schemaBytes, selErr := c.jsonSchemaSelector(newValues)
-		if selErr != nil {
-			return NewConfigError(OpLoad, "json-schema-selector", selErr)
-		}
-		compiled, raw, compErr := compileJSONSchema(schemaBytes)
-		if compErr != nil {
-			return NewConfigError(OpLoad, "json-schema-selector", compErr)
-		}
-		loadSchemaCompiled = compiled
-		loadSchemaRaw = raw
-	}
-
-	// Apply JSON Schema defaults to any keys that are missing from the
-	// loaded config. This runs before transforms and validation so that
-	// transforms and the schema validator see a fully populated map.
-	if loadSchemaRaw != nil {
-		newValues = applySchemaDefaults(newValues, loadSchemaRaw)
-	}
-
-	// Run registered transforms in order. Transforms receive the current
-	// values (with schema defaults already applied) and may return a
-	// modified map. They run before validation so the validated values
-	// are the final, transformed values.
-	for i, fn := range c.transforms {
-		newValues, err = fn(newValues)
+	for i, s := range c.steps {
+		newValues, err = s.run(newValues)
 		if err != nil {
-			return NewConfigError(OpLoad, fmt.Sprintf("transform[%d]", i), err)
+			return NewConfigError(OpLoad, fmt.Sprintf("step[%d]:%s", i, s.kind()), err)
 		}
 		if newValues == nil {
 			newValues = make(map[string]any)
-		}
-	}
-
-	if loadSchemaCompiled != nil {
-		if err = loadSchemaCompiled.Validate(newValues); err != nil {
-			return NewConfigError(OpLoad, "json-schema", err)
-		}
-	}
-
-	// Custom function validators
-	for i, fn := range c.customValidators {
-		var validatorErr error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					if rerr, ok := r.(error); ok {
-						validatorErr = fmt.Errorf("validator panic: %w", rerr)
-					} else {
-						validatorErr = fmt.Errorf("validator panic: %v", r)
-					}
-				}
-			}()
-			validatorErr = fn(newValues)
-		}()
-		if validatorErr != nil {
-			return NewConfigError(OpLoad, fmt.Sprintf("custom-validator[%d]", i), validatorErr)
 		}
 	}
 

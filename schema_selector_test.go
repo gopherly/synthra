@@ -68,30 +68,15 @@ func versionSelector(values map[string]any) ([]byte, error) {
 	return schema, nil
 }
 
-func TestWithJSONSchemaSelector_NilRejected(t *testing.T) {
+func TestWithJSONSchemaFunc_NilRejected(t *testing.T) {
 	t.Parallel()
 
-	_, err := New(WithJSONSchemaSelector(nil))
+	_, err := New(WithJSONSchemaFunc(nil))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "selector function cannot be nil")
+	assert.Contains(t, err.Error(), "selector cannot be nil")
 }
 
-func TestWithJSONSchemaSelector_MutualExclusionWithJSONSchema(t *testing.T) {
-	t.Parallel()
-
-	_, err := New(
-		WithJSONSchema(schemaForVersion("v1")),
-		WithJSONSchemaSelector(versionSelector),
-	)
-	require.Error(t, err)
-
-	var ce *ConfigError
-	require.ErrorAs(t, err, &ce)
-	assert.Equal(t, OpNew, ce.Op)
-	assert.Contains(t, err.Error(), "mutually exclusive")
-}
-
-func TestWithJSONSchemaSelector_HappyPath(t *testing.T) {
+func TestWithJSONSchemaFunc_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	var selectorGotValues map[string]any
@@ -100,7 +85,7 @@ func TestWithJSONSchemaSelector_HappyPath(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"apiversion": "v1",
 		})),
-		WithJSONSchemaSelector(func(values map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(values map[string]any) ([]byte, error) {
 			selectorGotValues = values
 			return versionSelector(values)
 		}),
@@ -108,16 +93,16 @@ func TestWithJSONSchemaSelector_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
 
-	// Selector received the merged values
+	// Selector received the merged values.
 	assert.Equal(t, "v1", selectorGotValues["apiversion"])
 
-	// Schema default for v1 (port=8080) applied
+	// Schema default for v1 (port=8080) applied.
 	port, err := cfg.Int("port")
 	require.NoError(t, err)
 	assert.Equal(t, 8080, port)
 }
 
-func TestWithJSONSchemaSelector_SelectsCorrectSchemaByVersion(t *testing.T) {
+func TestWithJSONSchemaFunc_SelectsCorrectSchemaByVersion(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -135,7 +120,7 @@ func TestWithJSONSchemaSelector_SelectsCorrectSchemaByVersion(t *testing.T) {
 				WithSource(source.NewMap(map[string]any{
 					"apiversion": tc.version,
 				})),
-				WithJSONSchemaSelector(versionSelector),
+				WithJSONSchemaFunc(versionSelector),
 			)
 			require.NoError(t, err)
 			require.NoError(t, cfg.Load(context.Background()))
@@ -153,14 +138,14 @@ func TestWithJSONSchemaSelector_SelectsCorrectSchemaByVersion(t *testing.T) {
 	}
 }
 
-func TestWithJSONSchemaSelector_SelectorErrorAbortsLoad(t *testing.T) {
+func TestWithJSONSchemaFunc_SelectorErrorAbortsLoad(t *testing.T) {
 	t.Parallel()
 
 	sentinel := errors.New("selector failed")
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithJSONSchemaSelector(func(_ map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
 			return nil, sentinel
 		}),
 	)
@@ -172,16 +157,16 @@ func TestWithJSONSchemaSelector_SelectorErrorAbortsLoad(t *testing.T) {
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
 	assert.Equal(t, OpLoad, ce.Op)
-	assert.Equal(t, "json-schema-selector", ce.Path)
+	assert.Equal(t, "step[0]:schema", ce.Path)
 	assert.ErrorIs(t, loadErr, sentinel)
 }
 
-func TestWithJSONSchemaSelector_InvalidSchemaBytesAbortsLoad(t *testing.T) {
+func TestWithJSONSchemaFunc_InvalidSchemaBytesAbortsLoad(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithJSONSchemaSelector(func(_ map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
 			return []byte(`not valid json`), nil
 		}),
 	)
@@ -193,17 +178,17 @@ func TestWithJSONSchemaSelector_InvalidSchemaBytesAbortsLoad(t *testing.T) {
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
 	assert.Equal(t, OpLoad, ce.Op)
-	assert.Equal(t, "json-schema-selector", ce.Path)
+	assert.Equal(t, "step[0]:schema", ce.Path)
 }
 
-func TestWithJSONSchemaSelector_UnknownVersionReturnsDescriptiveError(t *testing.T) {
+func TestWithJSONSchemaFunc_UnknownVersionReturnsDescriptiveError(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
 			"apiversion": "v99",
 		})),
-		WithJSONSchemaSelector(versionSelector),
+		WithJSONSchemaFunc(versionSelector),
 	)
 	require.NoError(t, err)
 
@@ -212,7 +197,7 @@ func TestWithJSONSchemaSelector_UnknownVersionReturnsDescriptiveError(t *testing
 	assert.Contains(t, loadErr.Error(), "unknown apiversion")
 }
 
-func TestWithJSONSchemaSelector_DefaultsFromSelectedSchema(t *testing.T) {
+func TestWithJSONSchemaFunc_DefaultsFromSelectedSchema(t *testing.T) {
 	t.Parallel()
 
 	// v2 schema has defaults for both port and log_level.
@@ -220,7 +205,7 @@ func TestWithJSONSchemaSelector_DefaultsFromSelectedSchema(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"apiversion": "v2",
 		})),
-		WithJSONSchemaSelector(versionSelector),
+		WithJSONSchemaFunc(versionSelector),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -234,7 +219,7 @@ func TestWithJSONSchemaSelector_DefaultsFromSelectedSchema(t *testing.T) {
 	assert.Equal(t, "debug", level)
 }
 
-func TestWithJSONSchemaSelector_UserValueOverridesSchemaDefault(t *testing.T) {
+func TestWithJSONSchemaFunc_UserValueOverridesSchemaDefault(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := New(
@@ -242,7 +227,7 @@ func TestWithJSONSchemaSelector_UserValueOverridesSchemaDefault(t *testing.T) {
 			"apiversion": "v1",
 			"port":       7777,
 		})),
-		WithJSONSchemaSelector(versionSelector),
+		WithJSONSchemaFunc(versionSelector),
 	)
 	require.NoError(t, err)
 	require.NoError(t, cfg.Load(context.Background()))
@@ -252,15 +237,17 @@ func TestWithJSONSchemaSelector_UserValueOverridesSchemaDefault(t *testing.T) {
 	assert.Equal(t, 7777, port)
 }
 
-func TestWithJSONSchemaSelector_TransformRunsAfterDefaults(t *testing.T) {
+func TestWithJSONSchemaFunc_TransformRunsAfterSchema(t *testing.T) {
 	t.Parallel()
 
 	// The transform uppercases the log_level which comes from a v2 schema default.
+	// WithJSONSchemaFunc runs first (applying defaults + validating), then the
+	// transform uppercases the result.
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
 			"apiversion": "v2",
 		})),
-		WithJSONSchemaSelector(versionSelector),
+		WithJSONSchemaFunc(versionSelector),
 		WithTransform(func(values map[string]any) (map[string]any, error) {
 			if v, ok := values["log_level"].(string); ok {
 				values["log_level"] = strings.ToUpper(v)
@@ -277,10 +264,10 @@ func TestWithJSONSchemaSelector_TransformRunsAfterDefaults(t *testing.T) {
 	assert.Equal(t, "DEBUG", level)
 }
 
-func TestWithJSONSchemaSelector_ValidationFailsForInvalidValue(t *testing.T) {
+func TestWithJSONSchemaFunc_ValidationFailsForInvalidValue(t *testing.T) {
 	t.Parallel()
 
-	// v1 schema requires "port" to be an integer; supply a string to trigger
+	// Schema requires "port" to be an integer; supply a string to trigger
 	// a validation failure.
 	invalidSchema := []byte(`{
 		"type": "object",
@@ -296,7 +283,7 @@ func TestWithJSONSchemaSelector_ValidationFailsForInvalidValue(t *testing.T) {
 			"apiversion": "v1",
 			"port":       "not-an-integer",
 		})),
-		WithJSONSchemaSelector(func(_ map[string]any) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
 			return invalidSchema, nil
 		}),
 	)
@@ -308,17 +295,17 @@ func TestWithJSONSchemaSelector_ValidationFailsForInvalidValue(t *testing.T) {
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
 	assert.Equal(t, OpLoad, ce.Op)
-	assert.Equal(t, "json-schema", ce.Path)
+	assert.Equal(t, "step[0]:schema", ce.Path)
 }
 
-func TestWithJSONSchemaSelector_ConcurrentLoadIsSafe(t *testing.T) {
+func TestWithJSONSchemaFunc_ConcurrentLoadIsSafe(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{
 			"apiversion": "v1",
 		})),
-		WithJSONSchemaSelector(versionSelector),
+		WithJSONSchemaFunc(versionSelector),
 	)
 	require.NoError(t, err)
 
@@ -334,4 +321,72 @@ func TestWithJSONSchemaSelector_ConcurrentLoadIsSafe(t *testing.T) {
 	for range goroutines {
 		assert.NoError(t, <-errs)
 	}
+}
+
+// TestWithJSONSchemaFunc_MultipleSchemas verifies that multiple WithJSONSchemaFunc
+// calls each add an independent schema step, both running in registration order.
+func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
+	t.Parallel()
+
+	partialSchema := []byte(`{
+		"type": "object",
+		"required": ["apiversion"]
+	}`)
+	fullSchema := []byte(`{
+		"type": "object",
+		"required": ["apiversion", "port"],
+		"properties": {
+			"port": {"type": "integer"}
+		}
+	}`)
+
+	t.Run("both schemas pass", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{
+				"apiversion": "v1",
+				"port":       8080,
+			})),
+			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return fullSchema, nil }),
+		)
+		require.NoError(t, err)
+		require.NoError(t, cfg.Load(context.Background()))
+	})
+
+	t.Run("first schema fails at step[0]", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{
+				// missing apiversion — fails first schema
+				"port": 8080,
+			})),
+			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return fullSchema, nil }),
+		)
+		require.NoError(t, err)
+		loadErr := cfg.Load(context.Background())
+		require.Error(t, loadErr)
+		var ce *ConfigError
+		require.ErrorAs(t, loadErr, &ce)
+		assert.Equal(t, "step[0]:schema", ce.Path)
+	})
+
+	t.Run("second schema fails at step[1]", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := New(
+			WithSource(source.NewMap(map[string]any{
+				"apiversion": "v1",
+				// missing port — passes partialSchema, fails fullSchema
+			})),
+			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) { return fullSchema, nil }),
+		)
+		require.NoError(t, err)
+		loadErr := cfg.Load(context.Background())
+		require.Error(t, loadErr)
+		var ce *ConfigError
+		require.ErrorAs(t, loadErr, &ce)
+		assert.Equal(t, "step[1]:schema", ce.Path)
+	})
 }

@@ -105,7 +105,7 @@ func TestWithTransform_ErrorAbortsLoad(t *testing.T) {
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
 	assert.Equal(t, OpLoad, ce.Op)
-	assert.Equal(t, "transform[0]", ce.Path)
+	assert.Equal(t, "step[0]:transform", ce.Path)
 	assert.ErrorIs(t, loadErr, sentinel)
 }
 
@@ -130,7 +130,7 @@ func TestWithTransform_SecondTransformErrorHasCorrectIndex(t *testing.T) {
 
 	var ce *ConfigError
 	require.ErrorAs(t, loadErr, &ce)
-	assert.Equal(t, "transform[1]", ce.Path)
+	assert.Equal(t, "step[1]:transform", ce.Path)
 }
 
 func TestWithTransform_NilReturnTreatedAsEmpty(t *testing.T) {
@@ -241,6 +241,28 @@ func TestWithTransform_EmptySourceMap(t *testing.T) {
 	val, err := cfg.String("injected")
 	require.NoError(t, err)
 	assert.Equal(t, "hello", val)
+}
+
+func TestWithEnvSubstFunc_SubstitutionError(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := New(
+		WithSource(source.NewMap(map[string]any{
+			"key": "${UNCLOSED",
+		})),
+		WithEnvSubstFunc(func(_ map[string]any) (Resolver, error) {
+			return FromMap(map[string]string{}), nil
+		}),
+	)
+	require.NoError(t, err)
+
+	loadErr := cfg.Load(context.Background())
+	require.Error(t, loadErr)
+
+	var ce *ConfigError
+	require.ErrorAs(t, loadErr, &ce)
+	assert.Equal(t, OpLoad, ce.Op)
+	assert.Contains(t, ce.Path, "transform")
 }
 
 func TestWithTransform_RunsAfterSchemaDefaults(t *testing.T) {

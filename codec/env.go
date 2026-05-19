@@ -18,7 +18,10 @@ package codec
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/hashicorp/go-envparse"
 )
 
 // EnvVar is a Decoder that decodes the environment variable format.
@@ -27,19 +30,23 @@ var EnvVar Decoder = envVarCodec{}
 type envVarCodec struct{}
 
 func (envVarCodec) Decode(data []byte, v any) error {
+	pairs, err := envparse.Parse(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("envVarCodec.Decode: %w", err)
+	}
+
+	// Sort keys so shorter entries (e.g. A=scalar) are always processed before
+	// longer nested ones (e.g. A_B=nested). This guarantees that nested keys
+	// consistently overwrite scalars regardless of map iteration order.
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	conf := make(map[string]any)
-
-	for env := range bytes.SplitSeq(data, []byte("\n")) {
-		pair := strings.SplitN(string(env), "=", 2)
-		if len(pair) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(pair[0])
-		if key == "" {
-			continue
-		}
-
+	for _, key := range keys {
+		val := pairs[key]
 		rawParts := strings.Split(strings.ToLower(key), "_")
 		parts := make([]string, 0, len(rawParts))
 		for _, part := range rawParts {
@@ -61,16 +68,13 @@ func (envVarCodec) Decode(data []byte, v any) error {
 			if nextMap, ok := current[part].(map[string]any); ok {
 				current = nextMap
 			} else {
-				current[part] = make(map[string]any)
-				if innerMap, okInner := current[part].(map[string]any); okInner {
-					current = innerMap
-				} else {
-					return fmt.Errorf("failed to create nested map for key: %s", part)
-				}
+				nested := make(map[string]any)
+				current[part] = nested
+				current = nested
 			}
 		}
 
-		current[parts[len(parts)-1]] = strings.TrimSpace(pair[1])
+		current[parts[len(parts)-1]] = val
 	}
 
 	ptr, ok := v.(*map[string]any)

@@ -1,0 +1,7 @@
+apiversion: v1-alpha.1
+service: ${APP_SERVICE:-my-service}
+port: 9090
+environments:
+  - name: production
+    envFile: .env.production
+  - name: staging

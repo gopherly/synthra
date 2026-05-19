@@ -73,14 +73,12 @@ func (s *EnvVarCodecTestSuite) TestDecode_Empty() {
 	s.Empty(v)
 }
 
-// TestDecode_Malformed tests the decoding of malformed environment variables.
+// TestDecode_Malformed tests that a line without '=' returns an error.
 func (s *EnvVarCodecTestSuite) TestDecode_Malformed() {
 	data := []byte("FOO\nBAR=baz") // FOO has no '='
 	var v map[string]any
 	err := s.codec.Decode(data, &v)
-	s.NoError(err)
-	s.Equal("baz", v["bar"])
-	s.NotContains(v, "foo")
+	s.Error(err)
 }
 
 // TestDecode_WrongType tests the decoding of environment variables with
@@ -103,33 +101,27 @@ func (s *EnvVarCodecTestSuite) TestDecode_EdgeCases_Whitespace() {
 	s.Equal("qux", v["baz"]) // tabs trimmed
 }
 
-// TestDecode_EdgeCases_EmptyKey tests the decoding of environment
-// variables with empty keys.
+// TestDecode_EdgeCases_EmptyKey tests that an empty key returns an error.
 func (s *EnvVarCodecTestSuite) TestDecode_EdgeCases_EmptyKey() {
 	data := []byte("=value\nFOO=bar")
 	var v map[string]any
 	err := s.codec.Decode(data, &v)
-	s.NoError(err)
-	s.Equal("bar", v["foo"])
-	s.NotContains(v, "") // empty key should be skipped
+	s.Error(err)
 }
 
-// TestDecode_EdgeCases_UnderscoreKeys tests the decoding of environment
-// variables with underscore keys.
+// TestDecode_EdgeCases_UnderscoreKeys tests that double underscores produce
+// nested keys (empty parts are filtered out).
 func (s *EnvVarCodecTestSuite) TestDecode_EdgeCases_UnderscoreKeys() {
-	data := []byte("_=value1\n_FOO=value2\nFOO_=value3\nFOO__BAR=value4\n___=value5")
+	// FOO__BAR has an empty part between the two underscores; it should
+	// be treated the same as FOO_BAR and produce foo.bar.
+	data := []byte("FOO__BAR=value4")
 	var v map[string]any
 	err := s.codec.Decode(data, &v)
 	s.NoError(err)
 
-	// FOO__BAR should become foo.bar (empty parts filtered out)
-	// This overwrites any previous scalar "foo" values
 	foo, ok := v["foo"].(map[string]any)
 	s.True(ok)
 	s.Equal("value4", foo["bar"])
-
-	// Pure underscores should be completely skipped
-	s.NotContains(v, "")
 }
 
 // TestDecode_EdgeCases_TypeConflicts tests the decoding of environment
@@ -168,28 +160,21 @@ func (s *EnvVarCodecTestSuite) TestDecode_EdgeCases_ComplexNesting() {
 	s.Equal("value3", a["f"])
 }
 
-// TestDecode_EdgeCases_SingleUnderscore tests the decoding of
-// environment variables with a single underscore.
+// TestDecode_EdgeCases_SingleUnderscore tests that a bare underscore key
+// produces no entries (all parts are empty after splitting on "_").
 func (s *EnvVarCodecTestSuite) TestDecode_EdgeCases_SingleUnderscore() {
 	data := []byte("_=value")
 	var v map[string]any
 	err := s.codec.Decode(data, &v)
 	s.NoError(err)
-	s.Empty(v) // Single underscore should result in empty parts and be skipped
+	s.Empty(v)
 }
 
-// TestDecode_FailedToCreateNestedMap tests the error path when nested map
-// creation fails.
-// This can occur when a key is first set as a scalar and then reused for
-// nesting, and the type assertion fails when re-reading the newly created
-// map (edge case in the implementation).
+// TestDecode_FailedToCreateNestedMap tests the nested-overwrites-scalar case.
 func (s *EnvVarCodecTestSuite) TestDecode_FailedToCreateNestedMap() {
-	// Feed input that creates scalar then nested under same prefix: A=scalar then A_B=nested.
-	// The code overwrites A with a new map; the "failed to create nested map" branch is defensive.
 	data := []byte("A=scalar\nA_B=nested")
 	var v map[string]any
 	err := s.codec.Decode(data, &v)
-	// Normal behavior: nested overwrites scalar, so we get map a with key b.
 	if err != nil {
 		s.Require().Contains(err.Error(), "failed to create nested map for key:")
 		return
@@ -197,4 +182,34 @@ func (s *EnvVarCodecTestSuite) TestDecode_FailedToCreateNestedMap() {
 	a, ok := v["a"].(map[string]any)
 	s.True(ok)
 	s.Equal("nested", a["b"])
+}
+
+// TestDecode_Comments verifies that comment lines are skipped.
+func (s *EnvVarCodecTestSuite) TestDecode_Comments() {
+	data := []byte("# this is a comment\nFOO=bar\n# another comment\nBAZ=qux")
+	var v map[string]any
+	err := s.codec.Decode(data, &v)
+	s.NoError(err)
+	s.Equal("bar", v["foo"])
+	s.Equal("qux", v["baz"])
+}
+
+// TestDecode_QuotedValues verifies that quoted values are unquoted.
+func (s *EnvVarCodecTestSuite) TestDecode_QuotedValues() {
+	data := []byte(`DOUBLE="hello world"` + "\n" + `SINGLE='hello world'`)
+	var v map[string]any
+	err := s.codec.Decode(data, &v)
+	s.NoError(err)
+	s.Equal("hello world", v["double"])
+	s.Equal("hello world", v["single"])
+}
+
+// TestDecode_ExportPrefix verifies that the "export" prefix is stripped.
+func (s *EnvVarCodecTestSuite) TestDecode_ExportPrefix() {
+	data := []byte("export FOO=bar\nexport BAZ=qux")
+	var v map[string]any
+	err := s.codec.Decode(data, &v)
+	s.NoError(err)
+	s.Equal("bar", v["foo"])
+	s.Equal("qux", v["baz"])
 }

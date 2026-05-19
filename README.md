@@ -28,15 +28,16 @@ flowchart LR
     S2[Env] --> Merge
     S3[Consul] --> Merge
     S4[Custom] --> Merge
-    Merge --> Defaults
+    Merge --> P1
 
-    subgraph Optional ["if configured"]
+    subgraph Pipeline ["pipeline steps (run in registration order)"]
         direction LR
-        Defaults["Schema Defaults"] --> Transform
-        Transform --> Validate["Validate"]
-        Validate --> Bind["Bind to struct"]
+        P1["Step 0<br>schema / transform / validator"] --> P2
+        P2["Step 1<br>..."] --> P3
+        P3["Step N<br>..."]
     end
 
+    P3 --> Bind["Bind to struct"]
     Bind --> Ready["Synthra ready"]
     Ready --> Read["Get / String / Int / ..."]
     Ready --> Dump["Dump"]
@@ -46,11 +47,11 @@ flowchart LR
     style S3 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     style S4 fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
     style Merge fill:#fef3c7,stroke:#f59e0b,color:#78350f
-    style Defaults fill:#fef3c7,stroke:#f59e0b,color:#78350f
-    style Transform fill:#fef3c7,stroke:#f59e0b,color:#78350f
-    style Validate fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style P1 fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style P2 fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style P3 fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    style Pipeline fill:#fffbeb,stroke:#f59e0b,stroke-dasharray:5 5,color:#92400e
     style Bind fill:#fef3c7,stroke:#f59e0b,color:#78350f
-    style Optional fill:#fffbeb,stroke:#f59e0b,stroke-dasharray:5 5,color:#92400e
     style Ready fill:#d1fae5,stroke:#10b981,color:#064e3b
     style Read fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
     style Dump fill:#ede9fe,stroke:#8b5cf6,color:#3b0764
@@ -65,8 +66,9 @@ Most Go services load configuration from more than one place. A YAML file holds 
 - Twelve-Factor friendly: environment variables override files cleanly across environments.
 - Automatic format detection from extension (`.yaml`, `.json`, `.toml`).
 - JSON Schema defaults fill missing keys automatically.
-- Dynamic schema selection based on a value inside the config itself.
-- Transforms and POSIX-style variable substitution, applied after merging and before validation.
+- Pipeline processing: schema steps, transforms, and validators run in registration order for full flexibility.
+- Dynamic schema selection with `WithJSONSchemaFunc` based on a value inside the config.
+- Two-phase validation: validate before substitution and again after.
 - Struct binding with type conversion, defaults, and validation.
 - Case-insensitive keys with dot notation (`server.port`).
 - Safe for concurrent use.
@@ -82,21 +84,20 @@ Most Go services load configuration from more than one place. A YAML file holds 
 5. [Struct binding](#struct-binding)
 6. [Default values](#default-values)
 7. [JSON Schema defaults](#json-schema-defaults)
-8. [Dynamic schema selection](#dynamic-schema-selection)
-9. [Transforms and variable substitution](#transforms-and-variable-substitution)
-10. [Validation](#validation)
-11. [Reading values](#reading-values)
-12. [Merge order and precedence](#merge-order-and-precedence)
-13. [Case insensitivity and dot notation](#case-insensitivity-and-dot-notation)
-14. [Environment variable naming](#environment-variable-naming)
-15. [Dumping configuration](#dumping-configuration)
-16. [Testing helpers](#testing-helpers)
-17. [Custom sources and codecs](#custom-sources-and-codecs)
-18. [Error handling](#error-handling)
-19. [Thread safety](#thread-safety)
-20. [Examples](#examples)
-21. [License](#license)
-22. [Contributing](#contributing)
+8. [Pipeline](#pipeline)
+9. [Validation](#validation)
+10. [Reading values](#reading-values)
+11. [Merge order and precedence](#merge-order-and-precedence)
+12. [Case insensitivity and dot notation](#case-insensitivity-and-dot-notation)
+13. [Environment variable naming](#environment-variable-naming)
+14. [Dumping configuration](#dumping-configuration)
+15. [Testing helpers](#testing-helpers)
+16. [Custom sources and codecs](#custom-sources-and-codecs)
+17. [Error handling](#error-handling)
+18. [Thread safety](#thread-safety)
+19. [Examples](#examples)
+20. [License](#license)
+21. [Contributing](#contributing)
 
 ## Quick start
 
@@ -419,14 +420,30 @@ schema := []byte(`{
 //   components.worker.replicas => 3       (from config.yaml, not overridden)
 ```
 
-## Dynamic schema selection
+## Pipeline
 
-Use `WithJSONSchemaSelector` when the right schema depends on a value inside the config itself. The most common case is an `apiVersion` field. The selector is a callback that receives the merged values at Load time and returns the schema bytes to use:
+After sources are merged, Synthra executes a pipeline of steps in the order they were registered. Each call to a pipeline option adds one step to the list. Steps run strictly in registration order; there is no implicit ordering between schema, transform, and validator steps.
+
+Pipeline step options:
+
+| Option | What it does |
+|--------|-------------|
+| `WithJSONSchema(bytes)` | Applies schema defaults then validates at this point in the pipeline. Schema bytes are validated at construction. |
+| `WithJSONSchemaFunc(selector)` | Same as `WithJSONSchema` but schema bytes come from a callback that receives the current values. Use this when the schema depends on a value inside the config (e.g. `apiVersion`). |
+| `WithTransform(fn)` | Applies an arbitrary map mutation at this point. |
+| `WithEnvSubst(resolvers...)` | Expands `${VAR}` placeholders in all string values. Sugar over `WithTransform`. |
+| `WithValidator(fn)` | Runs a read-only check. Does not modify values. |
+
+Because steps are ordered, you can place a schema before a transform, a transform before a validator, or anything else you need.
+
+### Dynamic schema selection
+
+Use `WithJSONSchemaFunc` when the schema depends on a value inside the config itself. The most common case is an `apiVersion` field:
 
 ```go
 cfg := synthra.MustNew(
     synthra.WithFile("manifest.yaml"),
-    synthra.WithJSONSchemaSelector(func(values map[string]any) ([]byte, error) {
+    synthra.WithJSONSchemaFunc(func(values map[string]any) ([]byte, error) {
         version, ok := values["apiversion"].(string)
         if !ok || version == "" {
             return nil, errors.New("apiVersion is required")
@@ -436,13 +453,33 @@ cfg := synthra.MustNew(
 )
 ```
 
-The selector runs after sources are merged and before schema defaults, transforms, and validation. The selected schema drives the whole pipeline exactly as if `WithJSONSchema` had been used.
+Multiple `WithJSONSchema` and `WithJSONSchemaFunc` calls are fully supported; each adds an independent schema step at the point it was registered.
 
-You can use `WithJSONSchema` or `WithJSONSchemaSelector`, but not both. Passing both to `New` returns an error.
+### Two-phase validation
 
-## Transforms and variable substitution
+Register a schema step before substitution to validate raw fields, then register another after substitution to validate the final form:
 
-`WithTransform` registers a function that processes the merged configuration map after schema defaults and before validation. Multiple transforms run as a pipeline in registration order.
+```go
+cfg := synthra.MustNew(
+    synthra.WithFile("manifest.yaml"),
+    // Step 1: validate the "environments" block on raw values.
+    synthra.WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+        return environmentsSchema, nil
+    }),
+    // Step 2: expand ${VAR} placeholders from OS environment.
+    synthra.WithEnvSubst(synthra.FromEnv()),
+    // Step 3: validate the fully-substituted manifest.
+    synthra.WithJSONSchemaFunc(func(_ map[string]any) ([]byte, error) {
+        return manifestSchema, nil
+    }),
+)
+```
+
+See [`examples/multi-schema`](./examples/multi-schema) for a runnable demonstration.
+
+### Transforms
+
+`WithTransform` registers a function that processes the merged configuration map at the point it was registered. Multiple transforms run in registration order.
 
 ```go
 s := synthra.MustNew(
@@ -453,21 +490,26 @@ s := synthra.MustNew(
         }
         return values, nil
     }),
-    synthra.WithJSONSchema(schema), // sees the transformed values
+    synthra.WithJSONSchema(schema), // validates the normalized values
 )
 ```
 
 `WithEnvSubst` is a convenience transform that expands POSIX-style `${VAR}` placeholders in all string values. It supports defaults (`${VAR:-fallback}`), uppercase conversion (`${VAR^^}`), prefix stripping (`${VAR#prefix}`), and more.
 
-Variable lookup is handled by pluggable resolvers from the `resolve` package. Pass one or more resolvers; the last one to find a given variable name wins (highest priority last).
+Variable lookup is handled by pluggable resolvers. Pass one or more resolvers; the last one to find a given variable name wins (highest priority last). Called with no arguments, it defaults to reading the OS environment.
 
 ```go
-import "gopherly.dev/synthra/resolve"
-
+// Simplest case: expand placeholders from OS env
 s := synthra.MustNew(
     synthra.WithFile("config.yaml"),
+    synthra.WithEnvSubst(),
+)
+
+// Static map
+s = synthra.MustNew(
+    synthra.WithFile("config.yaml"),
     synthra.WithJSONSchema(schema),
-    synthra.WithEnvSubst(resolve.Vars(map[string]string{
+    synthra.WithEnvSubst(synthra.FromMap(map[string]string{
         "ENV":    "production",
         "REGION": "eu-west-1",
     })),
@@ -482,9 +524,9 @@ Layer multiple resolvers for priority-based substitution. The last resolver in t
 s := synthra.MustNew(
     synthra.WithFile("deployah.yaml"),
     synthra.WithEnvSubst(
-        resolve.Vars(manifestVars),    // lowest priority
-        resolve.Vars(envFileVars),     // medium priority
-        resolve.OSPrefix("DPY_VAR_"),  // highest priority
+        synthra.FromMap(manifestVars),       // lowest priority
+        synthra.FromMap(envFileVars),        // medium priority
+        synthra.FromEnv().Prefix("DPY_VAR_"),   // highest priority
     ),
 )
 // config.yaml: port: ${PORT:-3000}
@@ -493,12 +535,41 @@ s := synthra.MustNew(
 // If neither is set, the ${VAR:-default} fallback provides "3000".
 ```
 
-The available resolver constructors in `gopherly.dev/synthra/resolve` are:
+The available resolver constructors are:
 
-- `resolve.Vars(m)`: looks up variables from a `map[string]string`
-- `resolve.OS()`: looks up variables using `os.LookupEnv` (reads live env at Load time)
-- `resolve.OSPrefix(prefix)`: looks up OS env vars with a prefix stripped (for example, `OSPrefix("APP_")` resolves `PORT` from `APP_PORT`)
-- `resolve.Chain(resolvers...)`: combines multiple resolvers, last wins
+- `synthra.FromMap(m)`: looks up variables from a `map[string]string`
+- `synthra.FromEnv()`: looks up variables using `os.LookupEnv` (reads live env at Load time)
+- `synthra.FromEnvFile(path)`: parses a `.env` file eagerly and returns a map-backed resolver; returns an error if the file is missing or malformed
+- `.Prefix(prefix)`: method on any `Resolver` that prepends a namespace prefix to each lookup (e.g. `FromEnv().Prefix("APP_")` resolves `PORT` from `APP_PORT`)
+
+Load a `.env` file and combine it with OS env (OS env wins):
+
+```go
+envFile, err := synthra.FromEnvFile(".env")
+if err != nil {
+    log.Fatal(err)
+}
+
+s := synthra.MustNew(
+    synthra.WithFile("config.yaml"),
+    synthra.WithEnvSubst(envFile, synthra.FromEnv()),
+)
+```
+
+Use `WithEnvSubstFunc` when the resolver depends on values already loaded from sources — for example, a `.env` file path stored inside the config file:
+
+```go
+s := synthra.MustNew(
+    synthra.WithFile("config.yaml"),
+    synthra.WithEnvSubstFunc(func(values map[string]any) (synthra.Resolver, error) {
+        envPath, _ := values["envfile"].(string)
+        if envPath == "" {
+            return synthra.FromEnv(), nil
+        }
+        return synthra.FromEnvFile(envPath)
+    }),
+)
+```
 
 **`WithEnv` and `WithEnvSubst` solve different problems:**
 
@@ -792,10 +863,12 @@ Synthra returns structured errors of type `*ConfigError`. They follow the shape 
 ```go
 type ConfigError struct {
     Op   string  // "new", "load", "dump", or "get"
-    Path string  // where the error happened (source index, field, schema name, ...)
+    Path string  // where the error happened (source index, field, step index, ...)
     Err  error   // the underlying cause
 }
 ```
+
+Pipeline step errors use the path format `"step[N]:kind"` where N is the zero-based step index and kind is `"schema"`, `"transform"`, or `"validator"`. For example, `"step[0]:schema"` means the first registered schema step failed.
 
 Use `errors.As` to read the operation:
 
@@ -848,6 +921,7 @@ The [`examples/`](./examples) folder has small, runnable programs. Each one has 
 | [`defaults`](./examples/defaults) | Baked-in defaults, then file, then env |
 | [`jsonschema`](./examples/jsonschema) | JSON Schema validation |
 | [`jsonschema-defaults`](./examples/jsonschema-defaults) | JSON Schema defaults and `WithEnvSubst` |
+| [`multi-schema`](./examples/multi-schema) | Two-phase validation with `WithJSONSchemaFunc` |
 | [`customvalidator`](./examples/customvalidator) | Cross-field check with `WithValidator` |
 | [`dump`](./examples/dump) | Writing the merged state to a file |
 | [`consul`](./examples/consul) | Optional Consul source for dev and prod |

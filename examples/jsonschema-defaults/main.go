@@ -27,7 +27,6 @@ import (
 	"os"
 
 	"gopherly.dev/synthra"
-	"gopherly.dev/synthra/resolve"
 )
 
 func main() {
@@ -44,7 +43,7 @@ func main() {
 	cfg, err := synthra.New(
 		synthra.WithFile("config.yaml"),
 		synthra.WithJSONSchema(schema), // validates AND applies "default" values
-		synthra.WithEnvSubst(resolve.Vars(map[string]string{
+		synthra.WithEnvSubst(synthra.FromMap(map[string]string{
 			"ENV": env,
 		})),
 	)

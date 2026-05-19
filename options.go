@@ -432,23 +432,17 @@ func WithTag(tagName string) Option {
 	}
 }
 
-// WithJSONSchema adds a JSON Schema for validation and automatic default
-// application. Synthra supports JSON Schema drafts 4, 6, 7, 2019-09, and
-// 2020-12.
+// WithJSONSchema adds a static JSON Schema as a pipeline step. The schema is
+// used to apply default values and validate the configuration at the point in
+// the pipeline where this option was registered.
 //
-// # Validation
-//
-// The merged configuration map is validated against the schema during [Load],
-// after schema defaults are applied and after any registered [WithTransform]
-// functions have run. If validation fails, Load returns a [*ConfigError] with
-// Op [OpLoad] and Path "json-schema".
+// Synthra supports JSON Schema drafts 4, 6, 7, 2019-09, and 2020-12.
 //
 // # Automatic defaults
 //
-// Synthra also extracts every "default" value declared in the schema and
-// applies it to any key that is missing from the loaded configuration. This
-// happens before transforms and validation run, so the schema validator always
-// sees a fully populated map.
+// Synthra extracts every "default" value declared in the schema and applies it
+// to any key that is missing from the current values map. Defaults are applied
+// before validation, so the schema validator always sees a fully populated map.
 //
 // Defaults are applied recursively at every level:
 //   - "properties" — fills missing fixed-name keys in an object
@@ -457,6 +451,16 @@ func WithTag(tagName string) Option {
 //   - "items" — fills missing keys inside each element of an array
 //
 // User-provided values are never overridden; only absent keys are filled.
+//
+// # Validation
+//
+// After defaults are applied the values are validated against the schema.
+// If validation fails, Load returns a [*ConfigError] with Op [OpLoad] and
+// Path "step[N]:schema" where N is the zero-based index of this step in the
+// registered pipeline.
+//
+// Multiple [WithJSONSchema] calls are allowed and each adds an independent
+// pipeline step that runs at the point it was registered.
 //
 // Example:
 //
@@ -467,18 +471,7 @@ func WithTag(tagName string) Option {
 //	        "service":   {"type": "string"},
 //	        "port":      {"type": "integer", "default": 8080},
 //	        "log_level": {"type": "string",  "default": "info",
-//	                      "enum": ["debug","info","warn","error"]},
-//	        "components": {
-//	            "type": "object",
-//	            "patternProperties": {
-//	                "^[a-z0-9-]+$": {
-//	                    "properties": {
-//	                        "role":     {"type": "string",  "default": "service"},
-//	                        "replicas": {"type": "integer", "default": 1}
-//	                    }
-//	                }
-//	            }
-//	        }
+//	                      "enum": ["debug","info","warn","error"]}
 //	    }
 //	}`)
 //
@@ -486,52 +479,50 @@ func WithTag(tagName string) Option {
 //	    synthra.WithFile("config.yaml"),
 //	    synthra.WithJSONSchema(schema),
 //	)
-//	// If config.yaml contains only:
-//	//   service: my-app
-//	//   components:
-//	//     web:
-//	//       image: nginx
-//	//
-//	// After Load:
-//	//   cfg.Get("port")                        => 8080      (schema default)
-//	//   cfg.Get("log_level")                   => "info"    (schema default)
-//	//   cfg.Get("components.web.role")         => "service" (patternProperties default)
-//	//   cfg.Get("components.web.replicas")     => 1         (patternProperties default)
 func WithJSONSchema(schema []byte) Option {
 	return func(cfg *config) {
-		compiled, raw, err := compileJSONSchema(schema)
-		if err != nil {
-			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithJSONSchema", err))
+		// Compile eagerly so callers get a construction-time error for invalid
+		// JSON or schema syntax, rather than discovering it on the first Load.
+		if _, _, err := compileJSONSchema(schema); err != nil {
+			cfg.validationErrors = append(cfg.validationErrors,
+				NewConfigError(OpNew, "WithJSONSchema", err))
 			return
 		}
-		cfg.jsonSchemaCompiled = compiled
-		cfg.jsonSchemaRaw = raw
+		cfg.steps = append(cfg.steps, &schemaStep{
+			selector: func(_ map[string]any) ([]byte, error) {
+				return schema, nil
+			},
+		})
 	}
 }
 
-// WithJSONSchemaSelector registers a lazy schema resolver that is called during
-// [Synthra.Load] with the merged configuration values and returns the JSON Schema
-// bytes to use for that load. This enables the schema to be chosen based on a
-// value read from the config itself — for example an `apiVersion` field — without
-// requiring a two-pass read.
+// WithJSONSchemaFunc registers a dynamic schema resolver as a pipeline step.
+// The selector is called during [Synthra.Load] with the current values map and
+// returns the JSON Schema bytes to use at that point in the pipeline. This
+// enables the schema to be chosen based on a value already present in the
+// config — for example an apiVersion field — without requiring a two-pass read.
 //
-// The selector runs after all sources are merged and before schema defaults,
-// transforms, and validation. The bytes it returns are compiled and the schema's
-// "default" values are extracted, so the full pipeline (defaults → transforms →
-// validation) applies exactly as if [WithJSONSchema] had been used.
+// The bytes returned by the selector are compiled and the schema's "default"
+// values are extracted and applied before validation runs, exactly as with
+// [WithJSONSchema].
 //
-// [WithJSONSchema] and [WithJSONSchemaSelector] are mutually exclusive. Using both
-// in the same [New] call is a construction-time error.
+// Multiple [WithJSONSchemaFunc] calls are allowed; each adds an independent
+// schema step that runs at the point it was registered. This is the mechanism
+// for two-phase validation: register a pre-transform schema step to validate
+// partial data, then register a post-transform schema step to validate the
+// final form.
 //
-// Errors returned by the selector abort [Load] with a [*ConfigError] whose Op is
-// [OpLoad] and Path is "json-schema-selector". Schema bytes that fail to compile
-// produce the same error shape.
+// If the selector returns an error, or the returned bytes fail to compile, or
+// validation fails, Load returns a [*ConfigError] with Op [OpLoad] and Path
+// "step[N]:schema" where N is the zero-based index of this step.
+//
+// The selector function must not be nil.
 //
 // Example — select schema version from the config's own apiVersion key:
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("deployah.yaml"),
-//	    synthra.WithJSONSchemaSelector(func(values map[string]any) ([]byte, error) {
+//	    synthra.WithJSONSchemaFunc(func(values map[string]any) ([]byte, error) {
 //	        version, ok := values["apiversion"].(string)
 //	        if !ok || version == "" {
 //	            return nil, errors.New("apiVersion is required")
@@ -539,22 +530,37 @@ func WithJSONSchema(schema []byte) Option {
 //	        return schema.GetManifestSchema(version)
 //	    }),
 //	)
-//	err := cfg.Load(context.Background())
-func WithJSONSchemaSelector(fn func(map[string]any) ([]byte, error)) Option {
+//
+// Example — two-phase validation (validate before and after substitution):
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("manifest.yaml"),
+//	    synthra.WithJSONSchemaFunc(environmentsSchema), // validate raw environments
+//	    synthra.WithEnvSubst(synthra.FromEnv()),         // substitute variables
+//	    synthra.WithJSONSchemaFunc(manifestSchema),     // validate substituted manifest
+//	)
+func WithJSONSchemaFunc(selector func(map[string]any) ([]byte, error)) Option {
 	return func(cfg *config) {
-		if fn == nil {
+		if selector == nil {
 			cfg.validationErrors = append(cfg.validationErrors,
-				NewConfigError(OpNew, "WithJSONSchemaSelector", errors.New("selector function cannot be nil")))
+				NewConfigError(OpNew, "WithJSONSchemaFunc", errors.New("selector cannot be nil")))
 			return
 		}
-		cfg.jsonSchemaSelector = fn
+		cfg.steps = append(cfg.steps, &schemaStep{selector: selector})
 	}
 }
 
-// WithValidator adds a custom validation function that runs against the
-// merged configuration map after all sources are loaded. Multiple validators
-// are executed in the order they are added; the first error stops evaluation.
+// WithValidator adds a custom validation function as a pipeline step. It runs
+// a read-only check against the current values map at the point in the pipeline
+// where it was registered. Multiple validators run in registration order; the
+// first error stops the pipeline.
+//
+// Panics inside the validator are recovered and reported as errors.
 // The function must not be nil.
+//
+// If the validator returns an error or panics, Load returns a [*ConfigError]
+// with Op [OpLoad] and Path "step[N]:validator" where N is the zero-based
+// index of this step.
 //
 // Example:
 //
@@ -574,6 +580,6 @@ func WithValidator(fn func(map[string]any) error) Option {
 			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithValidator", errors.New("validator cannot be nil")))
 			return
 		}
-		cfg.customValidators = append(cfg.customValidators, fn)
+		cfg.steps = append(cfg.steps, &validatorStep{fn: fn})
 	}
 }
