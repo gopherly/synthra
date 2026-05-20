@@ -132,13 +132,13 @@ type recordingDumper struct {
 	last  map[string]any
 }
 
-func (d *recordingDumper) Dump(_ context.Context, values *map[string]any) error {
+func (d *recordingDumper) Dump(_ context.Context, values map[string]any) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls++
-	if values != nil && *values != nil {
-		cp := make(map[string]any, len(*values))
-		maps.Copy(cp, *values)
+	if values != nil {
+		cp := make(map[string]any, len(values))
+		maps.Copy(cp, values)
 		d.last = cp
 	}
 	return d.Err
@@ -1426,15 +1426,15 @@ func TestValidation(t *testing.T) {
 	tests := []struct {
 		name      string
 		conf      map[string]any
-		validator func(*Values) error
+		validator func(Reader) error
 		wantErr   bool
 		errMsg    string
 	}{
 		{
 			name: "validator passes",
 			conf: map[string]any{"foo": "baz"},
-			validator: func(v *Values) error {
-				if v.StringOr("foo", "") != "baz" {
+			validator: func(r Reader) error {
+				if r.StringOr("foo", "") != "baz" {
 					return errors.New("foo must be 'baz'")
 				}
 				return nil
@@ -1444,8 +1444,8 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator fails",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(v *Values) error {
-				if v.StringOr("foo", "") != "baz" {
+			validator: func(r Reader) error {
+				if r.StringOr("foo", "") != "baz" {
 					return errors.New("foo must be 'baz'")
 				}
 				return nil
@@ -1455,7 +1455,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator panic with string is caught",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(_ *Values) error {
+			validator: func(_ Reader) error {
 				panic("validator panic")
 			},
 			wantErr: true,
@@ -1463,7 +1463,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator panic with error type is caught",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(_ *Values) error {
+			validator: func(_ Reader) error {
 				panic(errors.New("typed panic error"))
 			},
 			wantErr: true,
@@ -1850,19 +1850,17 @@ func TestWithConsulAs_ExpandsEnvVars(t *testing.T) {
 }
 
 // TestAddConsulSource_NewConsulError covers the error branch in addConsulSource
-// when the source constructor fails.  consulNewSource is replaced with a stub
-// that always returns an error so we can exercise the path without a real
-// Consul server.
+// when the source constructor fails. The consul factory is replaced with a stub
+// via WithConsulFactory so we can exercise the path without a real Consul server.
 func TestAddConsulSource_NewConsulError(t *testing.T) {
 	t.Setenv("CONSUL_HTTP_ADDR", "http://localhost:8500")
 
-	orig := consulNewSource
-	t.Cleanup(func() { consulNewSource = orig })
-	consulNewSource = func(_ string, _ codec.Decoder, _ source.ConsulKV) (Source, error) {
-		return nil, errors.New("stub: client creation failed")
-	}
-
-	_, err := New(WithConsul("production/service.yaml"))
+	_, err := New(
+		WithConsulFactory(func(_ string, _ codec.Decoder, _ source.ConsulKV) (Source, error) {
+			return nil, errors.New("stub: client creation failed")
+		}),
+		WithConsul("production/service.yaml"),
+	)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "stub: client creation failed")
 }
@@ -2936,27 +2934,28 @@ func TestSetDefaults_NestedStructPropagatesError(t *testing.T) {
 	assert.ErrorContains(t, err, "failed to set default")
 }
 
-// TestIsZeroValue_PointerInterfaceAndChannel covers the Interface/Pointer branch
-// and the default branch of isZeroValue.
-func TestIsZeroValue_PointerInterfaceAndChannel(t *testing.T) {
+// TestReflectIsZero_PointerInterfaceAndChannel verifies [reflect.Value.IsZero]
+// for types used during default application.
+func TestReflectIsZero_PointerInterfaceAndChannel(t *testing.T) {
 	t.Parallel()
 
 	t.Run("nil pointer is zero", func(t *testing.T) {
 		t.Parallel()
 		var p *int
-		assert.True(t, isZeroValue(reflect.ValueOf(p)))
+		assert.True(t, reflect.ValueOf(&p).Elem().IsZero())
 	})
 
 	t.Run("non-nil pointer is not zero", func(t *testing.T) {
 		t.Parallel()
 		x := 42
-		assert.False(t, isZeroValue(reflect.ValueOf(&x)))
+		ptr := &x
+		assert.False(t, reflect.ValueOf(&ptr).Elem().IsZero())
 	})
 
-	t.Run("channel hits default case and returns false", func(t *testing.T) {
+	t.Run("channel is not zero after make", func(t *testing.T) {
 		t.Parallel()
 		ch := make(chan int)
-		assert.False(t, isZeroValue(reflect.ValueOf(ch)))
+		assert.False(t, reflect.ValueOf(&ch).Elem().IsZero())
 	})
 }
 
@@ -3009,20 +3008,25 @@ func TestLoad_BindingInvalidIntDefault(t *testing.T) {
 
 // TestGetDecoderConfig_EmptyTagNameFallback covers the tagName == "" guard in
 // getDecoderConfig, which is only reachable when Synthra is constructed directly
-// without configFromConfig.
-func TestGetDecoderConfig_EmptyTagNameFallback(t *testing.T) {
+// TestDecodeBindingInto_EmptyTagNameFallback verifies the fallback to "synthra"
+// tag name when Synthra is constructed with an empty tagName.
+func TestDecodeBindingInto_EmptyTagNameFallback(t *testing.T) {
 	t.Parallel()
 
+	type cfg struct {
+		Port int `synthra:"port"`
+	}
+
 	s := &Synthra{} // tagName is ""
-	dc := s.getDecoderConfig()
-	require.NotNil(t, dc)
-	assert.Equal(t, "synthra", dc.TagName)
+	var target cfg
+	err := s.decodeBindingInto(&target, map[string]any{"port": 8080})
+	require.NoError(t, err)
+	assert.Equal(t, 8080, target.Port)
 }
 
-// TestSynthraNilValues covers the c.values == nil guard clauses in Values(),
-// getValueFromMap(), and Dump() that are only reachable when Synthra is
-// constructed directly with a nil values field.
-func TestSynthraNilValues(t *testing.T) {
+// TestSynthraNilSnap covers the Snapshot() and Dump() paths when Synthra is
+// constructed directly without calling build (nil snap pointer).
+func TestSynthraNilSnap(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Values returns empty map", func(t *testing.T) {
@@ -3033,13 +3037,13 @@ func TestSynthraNilValues(t *testing.T) {
 		assert.Empty(t, *vals)
 	})
 
-	t.Run("getValueFromMap returns nil", func(t *testing.T) {
+	t.Run("Get returns nil", func(t *testing.T) {
 		t.Parallel()
 		s := &Synthra{}
-		assert.Nil(t, s.getValueFromMap("any-key"))
+		assert.Nil(t, s.Get("any-key"))
 	})
 
-	t.Run("Dump with nil values succeeds", func(t *testing.T) {
+	t.Run("Dump with nil snap succeeds", func(t *testing.T) {
 		t.Parallel()
 		d := &recordingDumper{}
 		s := &Synthra{dumpers: []Dumper{d}}

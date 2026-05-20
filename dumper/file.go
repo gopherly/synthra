@@ -70,7 +70,7 @@ func NewFileWithPermissions(path string, encoder codec.Encoder, permissions os.F
 // Errors:
 //   - Returns error if encoding fails
 //   - Returns error if writing to the file fails
-func (f *File) Dump(_ context.Context, values *map[string]any) error {
+func (f *File) Dump(_ context.Context, values map[string]any) error {
 	data, err := f.encoder.Encode(values)
 	if err != nil {
 		return fmt.Errorf("failed to encode values: %w", err)

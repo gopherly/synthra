@@ -371,7 +371,7 @@ func TestValues_IntSlice_Value(t *testing.T) {
 func TestValues_StringMap_Value(t *testing.T) {
 	t.Parallel()
 	v := newValues(map[string]any{"labels": map[string]any{"env": "prod", "region": "eu"}})
-	got, err := v.StringMap("labels")
+	got, err := v.StringMapString("labels")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"env": "prod", "region": "eu"}, got)
 }

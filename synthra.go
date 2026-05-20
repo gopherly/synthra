@@ -21,13 +21,14 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"strings"
 	"sync"
+	"sync/atomic"
 
-	"github.com/go-viper/mapstructure/v2"
+	"gopherly.dev/synthra/codec"
+	"gopherly.dev/synthra/source"
 )
 
-// Option is a functional option that can be used to configure an Synthra instance.
+// Option is a functional option that can be used to configure a Synthra instance.
 // Options apply to an internal config struct; the constructor validates
 // and builds the public Synthra from it.
 // Options must not be nil; passing nil results in a validation error at
@@ -44,6 +45,7 @@ type config struct {
 	tagName          string
 	steps            []step
 	validationErrors []error
+	consulFactory    func(string, codec.Decoder, source.ConsulKV) (Source, error)
 }
 
 // Synthra manages configuration data loaded from multiple sources.
@@ -51,20 +53,19 @@ type config struct {
 // binding to structs, validation, and dumping to files.
 //
 // Synthra is the runtime object returned by New/MustNew; use it for
-// Load, Get, and Dump.
+// Load, typed accessors (String, Int, ...), and Dump.
+// Use [Synthra.Snapshot] to obtain a lock-free, immutable point-in-time view.
+//
 // Synthra is safe for concurrent use by multiple goroutines.
 type Synthra struct {
-	values       *map[string]any
+	snap         atomic.Pointer[Snapshot]
+	loadMu       sync.Mutex // serializes Load + binding writes
 	sources      []Source
 	dumpers      []Dumper
 	binding      any
 	bindingHooks []func(any) error
-	tagName      string // Custom struct tag name (default: "synthra")
+	tagName      string
 	steps        []step
-	mu           sync.RWMutex
-	// decoderConfig holds the cached decoder configuration for struct binding
-	decoderConfig *mapstructure.DecoderConfig
-	decoderOnce   sync.Once
 }
 
 // validate reports any errors collected during option application.
@@ -80,13 +81,15 @@ func defaultConfig() *config {
 	return &config{
 		sources: []Source{},
 		tagName: "synthra",
+		consulFactory: func(path string, decoder codec.Decoder, kv source.ConsulKV) (Source, error) {
+			return source.NewConsul(path, decoder, kv)
+		},
 	}
 }
 
-// configFromConfig builds a Synthra from a validated config.
-func configFromConfig(cfg *config) *Synthra {
-	return &Synthra{
-		values:       &map[string]any{},
+// build constructs a Synthra from a validated config.
+func (cfg *config) build() *Synthra {
+	s := &Synthra{
 		sources:      cfg.sources,
 		dumpers:      cfg.dumpers,
 		binding:      cfg.binding,
@@ -94,6 +97,8 @@ func configFromConfig(cfg *config) *Synthra {
 		tagName:      cfg.tagName,
 		steps:        cfg.steps,
 	}
+	s.snap.Store(emptySnapshot())
+	return s
 }
 
 // New creates a new [Synthra] instance with the provided options.
@@ -128,7 +133,7 @@ func New(opts ...Option) (*Synthra, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return configFromConfig(cfg), nil
+	return cfg.build(), nil
 }
 
 // MustNew is like [New] but panics if validation fails.
@@ -149,6 +154,26 @@ func MustNew(opts ...Option) *Synthra {
 		panic(fmt.Sprintf("synthra: validation failed: %v", err))
 	}
 	return cfg
+}
+
+// Snapshot returns the current immutable configuration snapshot. After Load
+// completes successfully, this returns the loaded values. Before Load (or if
+// Load has never been called), it returns an empty snapshot.
+//
+// Snapshot is nil-safe: calling it on a nil *Synthra returns an empty snapshot.
+//
+// The returned *Snapshot is safe to hold and read from any goroutine without
+// additional synchronization. Successive calls to Load atomically replace
+// the snapshot; callers holding an older *Snapshot continue to see their
+// point-in-time view.
+func (c *Synthra) Snapshot() *Snapshot {
+	if c == nil {
+		return emptySnapshot()
+	}
+	if p := c.snap.Load(); p != nil {
+		return p
+	}
+	return emptySnapshot()
 }
 
 // deepMerge merges src into dst recursively. When both dst and src have a map
@@ -185,7 +210,6 @@ func (c *Synthra) loadSourcesSequential(ctx context.Context) (map[string]any, er
 		return make(map[string]any), nil
 	}
 
-	// Merge to maintain precedence
 	newValues := make(map[string]any)
 	for i, src := range c.sources {
 		if ctx.Err() != nil {
@@ -197,7 +221,6 @@ func (c *Synthra) loadSourcesSequential(ctx context.Context) (map[string]any, er
 			return nil, NewConfigError(OpLoad, fmt.Sprintf("source[%d]", i), err)
 		}
 
-		// Ensure we always have a valid map, even if source returns nil
 		if conf == nil {
 			conf = make(map[string]any)
 		}
@@ -251,8 +274,8 @@ func (c *Synthra) Load(ctx context.Context) error {
 		}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
 
 	if c.binding != nil {
 		bindingType := reflect.TypeOf(c.binding)
@@ -278,13 +301,10 @@ func (c *Synthra) Load(ctx context.Context) error {
 			}
 		}
 
-		// tempBinding decoded and validated successfully; copy it into the
-		// real binding. A second decode would succeed identically, so we
-		// avoid the redundant work by copying via reflection.
 		reflect.ValueOf(c.binding).Elem().Set(reflect.ValueOf(tempBinding).Elem())
 	}
 
-	c.values = &newValues
+	c.snap.Store(&Snapshot{m: newValues})
 
 	return nil
 }
@@ -300,22 +320,10 @@ func (c *Synthra) Dump(ctx context.Context) error {
 		return NewConfigError(OpDump, "", ErrNilContext)
 	}
 
-	// Get a copy of the values to avoid holding locks during dumper calls
-	var valuesCopy map[string]any
-	func() {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		if c.values != nil {
-			// Use shallow copy for better performance
-			valuesCopy = make(map[string]any, len(*c.values))
-			maps.Copy(valuesCopy, *c.values)
-		} else {
-			valuesCopy = make(map[string]any)
-		}
-	}()
+	valuesCopy := maps.Clone(c.Snapshot().m)
 
 	for i, d := range c.dumpers {
-		if err := d.Dump(ctx, &valuesCopy); err != nil {
+		if err := d.Dump(ctx, valuesCopy); err != nil {
 			return NewConfigError(OpDump, fmt.Sprintf("dumper[%d]", i), err)
 		}
 	}
@@ -324,68 +332,22 @@ func (c *Synthra) Dump(ctx context.Context) error {
 }
 
 // Values returns a pointer to a shallow copy of the loaded configuration map.
-// The copy is taken while holding a read lock; nested maps, slices, and
-// pointers inside values are not deep-copied, so mutating nested data still
-// affects the same objects held by this Synthra.
 // If Load has not run yet, it returns a pointer to a new empty map.
 func (c *Synthra) Values() *map[string]any {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.values == nil {
-		m := make(map[string]any)
-		return &m
-	}
-
-	cloned := maps.Clone(*c.values)
-	return &cloned
+	m := maps.Clone(c.Snapshot().m)
+	return &m
 }
 
-// getValueFromMap retrieves the value associated with the given path from
-// the internal values map. The path is a dot-separated string that
-// represents the nested structure of the map. Lookup is case-insensitive
-// at each segment using findKeyFold.
-func (c *Synthra) getValueFromMap(path string) any {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.values == nil {
+// Get returns the value associated with the given key as an any type.
+// If the key is not found, it returns nil.
+func (c *Synthra) Get(key string) any {
+	if c == nil || key == "" {
 		return nil
 	}
-
-	current := *c.values
-
-	// 1. Check for a direct (top-level) key match first. This handles the
-	// uncommon case where a key itself contains a literal dot.
-	if k := findKeyFold(current, path); k != "" {
-		return current[k]
-	}
-
-	// 2. Fallback to dot-notation traversal. Navigate every segment except
-	// the last into the nested maps, then return the final segment's value.
-	segments := strings.Split(path, ".")
-	if len(segments) == 1 {
-		return nil // already checked above
-	}
-	for _, segment := range segments[:len(segments)-1] {
-		k := findKeyFold(current, segment)
-		if k == "" {
-			return nil
-		}
-		nested, isMap := current[k].(map[string]any)
-		if !isMap {
-			return nil
-		}
-		current = nested
-	}
-	k := findKeyFold(current, segments[len(segments)-1])
-	if k == "" {
-		return nil
-	}
-	return current[k]
+	return c.Snapshot().Get(key)
 }
 
-// requireValue returns the raw value at key for strict typed accessors and [Get].
+// requireValue returns the raw value at key for strict typed accessors.
 // It returns [ErrNilConfig] if c is nil, and an error wrapping [ErrKeyNotFound]
 // if the key is empty or not present.
 func (c *Synthra) requireValue(key string) (any, error) {
@@ -395,21 +357,9 @@ func (c *Synthra) requireValue(key string) (any, error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: empty key", ErrKeyNotFound)
 	}
-	v := c.getValueFromMap(key)
+	v := c.Snapshot().Get(key)
 	if v == nil {
 		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, key)
 	}
 	return v, nil
-}
-
-// Get returns the value associated with the given key as an any type.
-// If the key is not found, it returns nil.
-func (c *Synthra) Get(key string) any {
-	if c == nil {
-		return nil
-	}
-	if key == "" {
-		return nil
-	}
-	return c.getValueFromMap(key)
 }

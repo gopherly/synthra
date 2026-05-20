@@ -1,5 +1,4 @@
 // Copyright 2026 The Gopherly Authors
-// Copyright 2025 Company.info B.V.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,14 +14,15 @@
 
 package synthra
 
-import "context"
+import (
+	"gopherly.dev/synthra/codec"
+	"gopherly.dev/synthra/source"
+)
 
-// Source loads configuration data from a location such as files, environment
-// variables, or remote services.
-//
-// Load must be safe to call concurrently. Returned keys keep their original
-// casing; case-insensitive lookup is performed by [Synthra] at access time.
-// Sources should not lowercase or otherwise normalize keys themselves.
-type Source interface {
-	Load(ctx context.Context) (map[string]any, error)
+// WithConsulFactory replaces the consul source constructor for testing.
+// This allows tests to inject a fake without a real Consul server.
+func WithConsulFactory(f func(string, codec.Decoder, source.ConsulKV) (Source, error)) Option {
+	return func(cfg *config) {
+		cfg.consulFactory = f
+	}
 }

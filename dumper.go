@@ -25,5 +25,5 @@ import "context"
 type Dumper interface {
 	// Dump writes the configuration values to a destination.
 	// The values map should not be modified by implementations.
-	Dump(ctx context.Context, values *map[string]any) error
+	Dump(ctx context.Context, values map[string]any) error
 }

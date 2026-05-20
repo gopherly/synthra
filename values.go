@@ -40,60 +40,213 @@ func newValues(m map[string]any) *Values {
 	return &Values{m: m}
 }
 
-// Get returns the raw value at path or nil if no key matches. Lookup is
-// case-insensitive at each dot-separated segment. A top-level key that
-// literally contains a dot is checked first before falling back to
-// dot-notation traversal.
-func (v *Values) Get(path string) any {
-	if k := findKeyFold(v.m, path); k != "" {
-		return v.m[k]
-	}
-	segments := strings.Split(path, ".")
-	if len(segments) == 1 {
-		return nil
-	}
-	current := v.m
-	for _, seg := range segments[:len(segments)-1] {
-		k := findKeyFold(current, seg)
-		if k == "" {
-			return nil
-		}
-		nested, ok := current[k].(map[string]any)
-		if !ok {
-			return nil
-		}
-		current = nested
-	}
-	k := findKeyFold(current, segments[len(segments)-1])
-	if k == "" {
-		return nil
-	}
-	return current[k]
-}
+// --- Read methods (satisfy Reader interface) ---
+
+// Get returns the raw value at path or nil if no key matches.
+func (v *Values) Get(path string) any { return lookupPath(v.m, path) }
 
 // Has reports whether path exists in the values.
-func (v *Values) Has(path string) bool {
-	if findKeyFold(v.m, path) != "" {
-		return true
+func (v *Values) Has(path string) bool { return hasPath(v.m, path) }
+
+// Keys returns the top-level keys in their stored casing.
+func (v *Values) Keys() []string {
+	keys := make([]string, 0, len(v.m))
+	for k := range v.m {
+		keys = append(keys, k)
 	}
-	segments := strings.Split(path, ".")
-	if len(segments) == 1 {
-		return false
-	}
-	current := v.m
-	for _, seg := range segments[:len(segments)-1] {
-		k := findKeyFold(current, seg)
-		if k == "" {
-			return false
-		}
-		nested, ok := current[k].(map[string]any)
-		if !ok {
-			return false
-		}
-		current = nested
-	}
-	return findKeyFold(current, segments[len(segments)-1]) != ""
+	return keys
 }
+
+// String returns the value at path as a string.
+func (v *Values) String(path string) (string, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return "", err
+	}
+	return cast.ToStringE(raw)
+}
+
+// StringOr returns the value at path as a string, or def if not found.
+func (v *Values) StringOr(path, def string) string {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToString(raw)
+}
+
+// Int returns the value at path as an int.
+func (v *Values) Int(path string) (int, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return 0, err
+	}
+	return cast.ToIntE(raw)
+}
+
+// IntOr returns the value at path as an int, or def if not found.
+func (v *Values) IntOr(path string, def int) int {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToInt(raw)
+}
+
+// Int64 returns the value at path as an int64.
+func (v *Values) Int64(path string) (int64, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return 0, err
+	}
+	return cast.ToInt64E(raw)
+}
+
+// Int64Or returns the value at path as an int64, or def if not found.
+func (v *Values) Int64Or(path string, def int64) int64 {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToInt64(raw)
+}
+
+// Float64 returns the value at path as a float64.
+func (v *Values) Float64(path string) (float64, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return 0, err
+	}
+	return cast.ToFloat64E(raw)
+}
+
+// Float64Or returns the value at path as a float64, or def if not found.
+func (v *Values) Float64Or(path string, def float64) float64 {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToFloat64(raw)
+}
+
+// Bool returns the value at path as a bool.
+func (v *Values) Bool(path string) (bool, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return false, err
+	}
+	return cast.ToBoolE(raw)
+}
+
+// BoolOr returns the value at path as a bool, or def if not found.
+func (v *Values) BoolOr(path string, def bool) bool {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToBool(raw)
+}
+
+// Duration returns the value at path as a [time.Duration].
+func (v *Values) Duration(path string) (time.Duration, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return 0, err
+	}
+	return cast.ToDurationE(raw)
+}
+
+// DurationOr returns the value at path as a [time.Duration], or def if not found.
+func (v *Values) DurationOr(path string, def time.Duration) time.Duration {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToDuration(raw)
+}
+
+// Time returns the value at path as a [time.Time].
+func (v *Values) Time(path string) (time.Time, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return cast.ToTimeE(raw)
+}
+
+// TimeOr returns the value at path as a [time.Time], or def if not found.
+func (v *Values) TimeOr(path string, def time.Time) time.Time {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToTime(raw)
+}
+
+// StringSlice returns the value at path as a []string.
+func (v *Values) StringSlice(path string) ([]string, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return nil, err
+	}
+	return cast.ToStringSliceE(raw)
+}
+
+// StringSliceOr returns the value at path as a []string, or def if not found.
+func (v *Values) StringSliceOr(path string, def []string) []string {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToStringSlice(raw)
+}
+
+// IntSlice returns the value at path as a []int.
+func (v *Values) IntSlice(path string) ([]int, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return nil, err
+	}
+	return cast.ToIntSliceE(raw)
+}
+
+// IntSliceOr returns the value at path as a []int, or def if not found.
+func (v *Values) IntSliceOr(path string, def []int) []int {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToIntSlice(raw)
+}
+
+// StringMap returns the value at path as a map[string]any.
+func (v *Values) StringMap(path string) (map[string]any, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return nil, err
+	}
+	return cast.ToStringMapE(raw)
+}
+
+// StringMapOr returns the value at path as a map[string]any, or def if not found.
+func (v *Values) StringMapOr(path string, def map[string]any) map[string]any {
+	raw := lookupPath(v.m, path)
+	if raw == nil {
+		return def
+	}
+	return cast.ToStringMap(raw)
+}
+
+// StringMapString returns the value at path as a map[string]string.
+func (v *Values) StringMapString(path string) (map[string]string, error) {
+	raw, err := requirePath(v.m, path)
+	if err != nil {
+		return nil, err
+	}
+	return cast.ToStringMapStringE(raw)
+}
+
+// --- Mutation methods (pipeline-only) ---
 
 // Set assigns value at path. Intermediate maps are created as needed.
 // Returns an error if a non-final segment along the path exists but is
@@ -161,15 +314,6 @@ func (v *Values) Delete(path string) bool {
 	return true
 }
 
-// Keys returns the top-level keys in their stored casing.
-func (v *Values) Keys() []string {
-	keys := make([]string, 0, len(v.m))
-	for k := range v.m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
 // Walk visits every node in the tree depth-first. The callback receives the
 // dot-path to the node and its current value. Returning (newValue, true)
 // replaces the node; returning (_, false) leaves it unchanged. Slice indices
@@ -218,156 +362,3 @@ func walkSlice(s []any, prefix string, fn func(path string, value any) (any, boo
 // plain map[string]any. Mutations on the returned map remain visible through
 // this *Values.
 func (v *Values) Raw() map[string]any { return v.m }
-
-// requireValue returns the raw value at path or an error if not found.
-func (v *Values) requireValue(path string) (any, error) {
-	raw := v.Get(path)
-	if raw == nil {
-		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, path)
-	}
-	return raw, nil
-}
-
-// String returns the value at path as a string.
-func (v *Values) String(path string) (string, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return "", err
-	}
-	return cast.ToStringE(raw)
-}
-
-// StringOr returns the value at path as a string, or def if not found.
-func (v *Values) StringOr(path, def string) string {
-	raw := v.Get(path)
-	if raw == nil {
-		return def
-	}
-	return cast.ToString(raw)
-}
-
-// Int returns the value at path as an int.
-func (v *Values) Int(path string) (int, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return 0, err
-	}
-	return cast.ToIntE(raw)
-}
-
-// IntOr returns the value at path as an int, or def if not found.
-func (v *Values) IntOr(path string, def int) int {
-	raw := v.Get(path)
-	if raw == nil {
-		return def
-	}
-	return cast.ToInt(raw)
-}
-
-// Int64 returns the value at path as an int64.
-func (v *Values) Int64(path string) (int64, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return 0, err
-	}
-	return cast.ToInt64E(raw)
-}
-
-// Int64Or returns the value at path as an int64, or def if not found.
-func (v *Values) Int64Or(path string, def int64) int64 {
-	raw := v.Get(path)
-	if raw == nil {
-		return def
-	}
-	return cast.ToInt64(raw)
-}
-
-// Float64 returns the value at path as a float64.
-func (v *Values) Float64(path string) (float64, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return 0, err
-	}
-	return cast.ToFloat64E(raw)
-}
-
-// Float64Or returns the value at path as a float64, or def if not found.
-func (v *Values) Float64Or(path string, def float64) float64 {
-	raw := v.Get(path)
-	if raw == nil {
-		return def
-	}
-	return cast.ToFloat64(raw)
-}
-
-// Bool returns the value at path as a bool.
-func (v *Values) Bool(path string) (bool, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return false, err
-	}
-	return cast.ToBoolE(raw)
-}
-
-// BoolOr returns the value at path as a bool, or def if not found.
-func (v *Values) BoolOr(path string, def bool) bool {
-	raw := v.Get(path)
-	if raw == nil {
-		return def
-	}
-	return cast.ToBool(raw)
-}
-
-// Duration returns the value at path as a [time.Duration].
-func (v *Values) Duration(path string) (time.Duration, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return 0, err
-	}
-	return cast.ToDurationE(raw)
-}
-
-// DurationOr returns the value at path as a [time.Duration], or def if not found.
-func (v *Values) DurationOr(path string, def time.Duration) time.Duration {
-	raw := v.Get(path)
-	if raw == nil {
-		return def
-	}
-	return cast.ToDuration(raw)
-}
-
-// Time returns the value at path as a [time.Time].
-func (v *Values) Time(path string) (time.Time, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return cast.ToTimeE(raw)
-}
-
-// StringSlice returns the value at path as a []string.
-func (v *Values) StringSlice(path string) ([]string, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return nil, err
-	}
-	return cast.ToStringSliceE(raw)
-}
-
-// IntSlice returns the value at path as a []int.
-func (v *Values) IntSlice(path string) ([]int, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return nil, err
-	}
-	return cast.ToIntSliceE(raw)
-}
-
-// StringMap returns the value at path as a map[string]string.
-func (v *Values) StringMap(path string) (map[string]string, error) {
-	raw, err := v.requireValue(path)
-	if err != nil {
-		return nil, err
-	}
-	return cast.ToStringMapStringE(raw)
-}

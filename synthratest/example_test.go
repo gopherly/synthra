@@ -29,7 +29,7 @@ func ExampleDumper() {
 	d := &synthratest.Dumper{}
 	ctx := context.Background()
 	m := map[string]any{"region": "us-east"}
-	if err := d.Dump(ctx, &m); err != nil {
+	if err := d.Dump(ctx, m); err != nil {
 		fmt.Println("dump error:", err)
 		return
 	}

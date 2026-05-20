@@ -17,11 +17,16 @@ package synthra
 import (
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/cast"
 )
+
+// defaultsCache caches whether a struct type has any `default` tags,
+// avoiding repeated reflection scans on repeated Load calls.
+var defaultsCache sync.Map // map[reflect.Type]bool
 
 // Validator is an interface for structs that can validate their own configuration.
 // The validation package uses the same contract (validation.Validator); a
@@ -51,35 +56,49 @@ func applyDefaults(target any) error {
 func setDefaults(val reflect.Value) error {
 	typ := val.Type()
 
+	if !structHasDefaults(typ) {
+		return nil
+	}
+
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
 
-		// Skip unexported fields
 		if !field.CanSet() {
 			continue
 		}
 
-		// Handle nested structs
-		if field.Kind() == reflect.Struct {
+		switch field.Kind() {
+		case reflect.Struct:
 			if err := setDefaults(field); err != nil {
 				return err
 			}
 			continue
+		case reflect.Pointer:
+			if field.Type().Elem().Kind() == reflect.Struct {
+				if field.IsNil() {
+					if structHasDefaults(field.Type().Elem()) {
+						field.Set(reflect.New(field.Type().Elem()))
+					} else {
+						continue
+					}
+				}
+				if err := setDefaults(field.Elem()); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
-		// Check if field has a default tag
 		defaultTag := fieldType.Tag.Get("default")
 		if defaultTag == "" {
 			continue
 		}
 
-		// Only set default if field is zero-valued
-		if !isZeroValue(field) {
+		if !field.IsZero() {
 			continue
 		}
 
-		// Set the default value based on field type
 		if err := setDefaultValue(field, defaultTag); err != nil {
 			return fmt.Errorf("failed to set default for field %s: %w", fieldType.Name, err)
 		}
@@ -88,24 +107,36 @@ func setDefaults(val reflect.Value) error {
 	return nil
 }
 
-// isZeroValue checks if a [reflect.Value] is the zero value for its type.
-func isZeroValue(v reflect.Value) bool {
-	switch v.Kind() {
-	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
-		return v.Len() == 0
-	case reflect.Bool:
-		return !v.Bool()
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return v.Int() == 0
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return v.Uint() == 0
-	case reflect.Float32, reflect.Float64:
-		return v.Float() == 0
-	case reflect.Interface, reflect.Pointer:
-		return v.IsNil()
-	default:
-		return false
+// structHasDefaults reports whether typ (must be a struct type) or any of its
+// nested structs carry at least one `default` tag. Results are cached.
+func structHasDefaults(typ reflect.Type) bool {
+	if v, loaded := defaultsCache.Load(typ); loaded {
+		if has, ok := v.(bool); ok {
+			return has
+		}
 	}
+	has := scanDefaults(typ)
+	defaultsCache.Store(typ, has)
+	return has
+}
+
+func scanDefaults(typ reflect.Type) bool {
+	for f := range typ.Fields() {
+		if !f.IsExported() {
+			continue
+		}
+		if f.Tag.Get("default") != "" {
+			return true
+		}
+		ft := f.Type
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Struct && structHasDefaults(ft) {
+			return true
+		}
+	}
+	return false
 }
 
 // setDefaultValue sets a default value on a field based on its type.
@@ -152,42 +183,35 @@ func setDefaultValue(field reflect.Value, defaultVal string) error {
 	return nil
 }
 
-// getDecoderConfig returns a cached decoder configuration to reduce
-// reflection overhead.
+// decodeBindingInto decodes values into target using mapstructure.
+//
+// A fresh DecoderConfig is built on every call because mapstructure documents
+// that a config must not be reused after NewDecoder returns. The DecodeHook
+// composition cost is negligible compared to the decode itself.
 //
 // mapstructure's default field-matching function is [strings.EqualFold], so
 // it is already case-insensitive. Keys canonicalized by canonicalizeSchemaKeys
 // (or preserved as-is when no schema is present) flow naturally into struct
 // fields regardless of casing differences between the config source and the
 // struct tag.
-func (c *Synthra) getDecoderConfig() *mapstructure.DecoderConfig {
-	c.decoderOnce.Do(func() {
-		tagName := c.tagName
-		if tagName == "" {
-			tagName = "synthra" // Fallback to default
-		}
-		c.decoderConfig = &mapstructure.DecoderConfig{
-			TagName:          tagName,
-			Squash:           true,
-			WeaklyTypedInput: true,
-			DecodeHook: mapstructure.ComposeDecodeHookFunc(
-				mapstructure.StringToTimeDurationHookFunc(),
-				mapstructure.StringToSliceHookFunc(","),
-				mapstructure.StringToTimeHookFunc(time.RFC3339),
-				mapstructure.StringToURLHookFunc(),
-			),
-		}
-	})
-	return c.decoderConfig
-}
-
-// decodeBindingInto decodes values into target using mapstructure. Errors
-// match the messages produced by the former bind/bindAndValidate helpers.
 func (c *Synthra) decodeBindingInto(target, values any) error {
-	decoderCfg := c.getDecoderConfig()
-	decoderCfg.Result = target
+	tagName := c.tagName
+	if tagName == "" {
+		tagName = "synthra"
+	}
 
-	decoder, err := mapstructure.NewDecoder(decoderCfg)
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		TagName:          tagName,
+		Result:           target,
+		Squash:           true,
+		WeaklyTypedInput: true,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+			mapstructure.StringToTimeHookFunc(time.RFC3339),
+			mapstructure.StringToURLHookFunc(),
+		),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create decoder: %w", err)
 	}

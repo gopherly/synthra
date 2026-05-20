@@ -193,9 +193,8 @@ func FuzzValidator(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, value string) {
 		src := source.NewMap(map[string]any{"key": value})
-		validator := func(v *Values) error {
-			// Simple validation that should not panic
-			s := v.StringOr("key", "")
+		validator := func(r Reader) error {
+			s := r.StringOr("key", "")
 			if s == "" {
 				return errors.New("key cannot be empty")
 			}

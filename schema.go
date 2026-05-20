@@ -16,8 +16,6 @@ package synthra
 
 import (
 	"encoding/json"
-	"fmt"
-	"math/rand"
 	"regexp"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -122,30 +120,26 @@ func applyItemDefaults(slice []any, propSchema map[string]any) []any {
 	return slice
 }
 
+// inlineSchemaResource is the fixed resource name used by compileJSONSchema.
+// A fresh compiler is created on every call so no name collision is possible.
+const inlineSchemaResource = "inline.json"
+
 // compileJSONSchema compiles raw JSON Schema bytes into a validated, executable
 // schema and also returns the raw parsed map for default extraction.
 // It is shared by [WithJSONSchema] (at construction time) and the
-// [WithJSONSchemaSelector] path inside [Synthra.Load] (at load time).
+// [WithJSONSchemaFunc] path inside [Synthra.Load] (at load time).
 func compileJSONSchema(schema []byte) (*jsonschema.Schema, map[string]any, error) {
-	// Parse the raw bytes first so invalid JSON fails early with a clear error.
 	var raw map[string]any
 	if err := json.Unmarshal(schema, &raw); err != nil {
 		return nil, nil, err
 	}
 
-	// Use a unique schema name to avoid caching collisions across calls.
-	//nolint:gosec // rand.Int() is used for a unique schema name, not security sensitive
-	schemaName := fmt.Sprintf("inline_%d.json", rand.Int())
 	compiler := jsonschema.NewCompiler()
-
-	// AddResource cannot fail: raw is a valid map[string]any (already verified
-	// by json.Unmarshal above), the schema name is unique per compiler
-	// instance, and we create a fresh compiler on every call.
-	if err := compiler.AddResource(schemaName, raw); err != nil {
+	if err := compiler.AddResource(inlineSchemaResource, raw); err != nil {
 		return nil, nil, err
 	}
 
-	compiled, err := compiler.Compile(schemaName)
+	compiled, err := compiler.Compile(inlineSchemaResource)
 	if err != nil {
 		return nil, nil, err
 	}

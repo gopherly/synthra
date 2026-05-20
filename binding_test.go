@@ -200,3 +200,84 @@ func TestOnBound_TypeMismatch_CompilesOnlyWithMatchingType(t *testing.T) {
 	// Nothing to run; the doc comment above is the assertion.
 	t.Log("type-safety is verified at compile time; see doc comment above")
 }
+
+// TestDefaults_PointerToStruct verifies that setDefaults allocates and
+// recurses into nil *SubConfig fields when SubConfig carries default tags.
+func TestDefaults_PointerToStruct(t *testing.T) {
+	t.Parallel()
+
+	type DB struct {
+		Host string `synthra:"host" default:"localhost"`
+		Port int    `synthra:"port" default:"5432"`
+	}
+	type Cfg struct {
+		Name string `synthra:"name"`
+		DB   *DB    `synthra:"db"`
+	}
+
+	var out Cfg
+	cfg, err := synthra.New(
+		synthra.WithSource(source.NewMap(map[string]any{"name": "app"})),
+		synthra.WithBinding(&out),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	require.NotNil(t, out.DB, "pointer-to-struct with defaults must be allocated")
+	assert.Equal(t, "localhost", out.DB.Host)
+	assert.Equal(t, 5432, out.DB.Port)
+}
+
+// TestDefaults_PointerToStructNoDefaults verifies that nil *SubConfig
+// fields are NOT allocated when the sub-struct has no default tags.
+func TestDefaults_PointerToStructNoDefaults(t *testing.T) {
+	t.Parallel()
+
+	type DB struct {
+		Host string `synthra:"host"`
+		Port int    `synthra:"port"`
+	}
+	type Cfg struct {
+		Name string `synthra:"name" default:"app"`
+		DB   *DB    `synthra:"db"`
+	}
+
+	var out Cfg
+	cfg, err := synthra.New(
+		synthra.WithSource(source.NewMap(map[string]any{})),
+		synthra.WithBinding(&out),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	assert.Equal(t, "app", out.Name)
+	assert.Nil(t, out.DB, "pointer-to-struct without defaults must stay nil")
+}
+
+// TestDefaults_PointerToStructAlreadyPopulated verifies that defaults do not
+// overwrite already-populated fields in a pointer-to-struct.
+func TestDefaults_PointerToStructAlreadyPopulated(t *testing.T) {
+	t.Parallel()
+
+	type DB struct {
+		Host string `synthra:"host" default:"localhost"`
+		Port int    `synthra:"port" default:"5432"`
+	}
+	type Cfg struct {
+		DB *DB `synthra:"db"`
+	}
+
+	var out Cfg
+	cfg, err := synthra.New(
+		synthra.WithSource(source.NewMap(map[string]any{
+			"db": map[string]any{"host": "remotehost", "port": 3306},
+		})),
+		synthra.WithBinding(&out),
+	)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Load(context.Background()))
+
+	require.NotNil(t, out.DB)
+	assert.Equal(t, "remotehost", out.DB.Host)
+	assert.Equal(t, 3306, out.DB.Port)
+}

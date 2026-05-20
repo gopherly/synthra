@@ -72,17 +72,15 @@ func GetOr[T any](c *Synthra, key string, defaultVal T) T {
 		return defaultVal
 	}
 
-	val := c.getValueFromMap(key)
+	val := c.Snapshot().Get(key)
 	if val == nil {
 		return defaultVal
 	}
 
-	// Try direct type assertion first
 	if result, ok := val.(T); ok {
 		return result
 	}
 
-	// Fallback to cast library for common type conversions
 	result, ok := convertToType[T](val)
 	if ok {
 		return result
@@ -91,16 +89,9 @@ func GetOr[T any](c *Synthra, key string, defaultVal T) T {
 	return defaultVal
 }
 
+// --- Typed accessors on *Synthra (delegate to Snapshot) ---
+
 // String returns the value at key as a string.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	host, err := cfg.String("server.host")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) String(key string) (string, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -114,15 +105,6 @@ func (c *Synthra) String(key string) (string, error) {
 }
 
 // Int returns the value at key as an int.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	port, err := cfg.Int("server.port")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) Int(key string) (int, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -136,15 +118,6 @@ func (c *Synthra) Int(key string) (int, error) {
 }
 
 // Int64 returns the value at key as an int64.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	maxSize, err := cfg.Int64("max_size")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) Int64(key string) (int64, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -158,15 +131,6 @@ func (c *Synthra) Int64(key string) (int64, error) {
 }
 
 // Float64 returns the value at key as a float64.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	rate, err := cfg.Float64("rate")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) Float64(key string) (float64, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -180,15 +144,6 @@ func (c *Synthra) Float64(key string) (float64, error) {
 }
 
 // Bool returns the value at key as a bool.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	debug, err := cfg.Bool("debug")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) Bool(key string) (bool, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -202,15 +157,6 @@ func (c *Synthra) Bool(key string) (bool, error) {
 }
 
 // Duration returns the value at key as a [time.Duration].
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	timeout, err := cfg.Duration("timeout")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) Duration(key string) (time.Duration, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -224,15 +170,6 @@ func (c *Synthra) Duration(key string) (time.Duration, error) {
 }
 
 // Time returns the value at key as a [time.Time].
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	startTime, err := cfg.Time("start_time")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) Time(key string) (time.Time, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -246,15 +183,6 @@ func (c *Synthra) Time(key string) (time.Time, error) {
 }
 
 // StringSlice returns the value at key as a []string.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	tags, err := cfg.StringSlice("tags")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) StringSlice(key string) ([]string, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -268,15 +196,6 @@ func (c *Synthra) StringSlice(key string) ([]string, error) {
 }
 
 // IntSlice returns the value at key as a []int.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	ports, err := cfg.IntSlice("ports")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) IntSlice(key string) ([]int, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -290,15 +209,6 @@ func (c *Synthra) IntSlice(key string) ([]int, error) {
 }
 
 // StringMap returns the value at key as a map[string]any.
-// It returns an error if c is nil, the key is missing,
-// or the value cannot be converted.
-//
-// Example:
-//
-//	metadata, err := cfg.StringMap("metadata")
-//	if err != nil {
-//	    return err
-//	}
 func (c *Synthra) StringMap(key string) (map[string]any, error) {
 	v, err := c.requireValue(key)
 	if err != nil {
@@ -311,12 +221,9 @@ func (c *Synthra) StringMap(key string) (map[string]any, error) {
 	return m, nil
 }
 
-// StringOr returns the value associated with the given key as a string,
-// or the default value if not found.
-//
-// Example:
-//
-//	host := cfg.StringOr("server.host", "localhost")
+// --- Or-variant accessors ---
+
+// StringOr returns the value at key as a string, or the default if not found.
 func (c *Synthra) StringOr(key, defaultVal string) string {
 	if c == nil {
 		return defaultVal
@@ -328,12 +235,7 @@ func (c *Synthra) StringOr(key, defaultVal string) string {
 	return cast.ToString(val)
 }
 
-// IntOr returns the value associated with the given key as an int, or
-// the default value if not found.
-//
-// Example:
-//
-//	port := cfg.IntOr("server.port", 8080)
+// IntOr returns the value at key as an int, or the default if not found.
 func (c *Synthra) IntOr(key string, defaultVal int) int {
 	if c == nil {
 		return defaultVal
@@ -345,12 +247,7 @@ func (c *Synthra) IntOr(key string, defaultVal int) int {
 	return cast.ToInt(val)
 }
 
-// Int64Or returns the value associated with the given key as an int64,
-// or the default value if not found.
-//
-// Example:
-//
-//	maxSize := cfg.Int64Or("max_size", 1024)
+// Int64Or returns the value at key as an int64, or the default if not found.
 func (c *Synthra) Int64Or(key string, defaultVal int64) int64 {
 	if c == nil {
 		return defaultVal
@@ -362,12 +259,7 @@ func (c *Synthra) Int64Or(key string, defaultVal int64) int64 {
 	return cast.ToInt64(val)
 }
 
-// Float64Or returns the value associated with the given key as a float64,
-// or the default value if not found.
-//
-// Example:
-//
-//	rate := cfg.Float64Or("rate", 0.5)
+// Float64Or returns the value at key as a float64, or the default if not found.
 func (c *Synthra) Float64Or(key string, defaultVal float64) float64 {
 	if c == nil {
 		return defaultVal
@@ -379,12 +271,7 @@ func (c *Synthra) Float64Or(key string, defaultVal float64) float64 {
 	return cast.ToFloat64(val)
 }
 
-// BoolOr returns the value associated with the given key as a boolean,
-// or the default value if not found.
-//
-// Example:
-//
-//	debug := cfg.BoolOr("debug", false)
+// BoolOr returns the value at key as a bool, or the default if not found.
 func (c *Synthra) BoolOr(key string, defaultVal bool) bool {
 	if c == nil {
 		return defaultVal
@@ -396,12 +283,7 @@ func (c *Synthra) BoolOr(key string, defaultVal bool) bool {
 	return cast.ToBool(val)
 }
 
-// DurationOr returns the value associated with the given key as a
-// [time.Duration], or the default value if not found.
-//
-// Example:
-//
-//	timeout := cfg.DurationOr("timeout", 30*time.Second)
+// DurationOr returns the value at key as a [time.Duration], or def if not found.
 func (c *Synthra) DurationOr(key string, defaultVal time.Duration) time.Duration {
 	if c == nil {
 		return defaultVal
@@ -413,12 +295,7 @@ func (c *Synthra) DurationOr(key string, defaultVal time.Duration) time.Duration
 	return cast.ToDuration(val)
 }
 
-// TimeOr returns the value associated with the given key as a [time.Time],
-// or the default value if not found.
-//
-// Example:
-//
-//	startTime := cfg.TimeOr("start_time", time.Now())
+// TimeOr returns the value at key as a [time.Time], or the default if not found.
 func (c *Synthra) TimeOr(key string, defaultVal time.Time) time.Time {
 	if c == nil {
 		return defaultVal
@@ -430,12 +307,7 @@ func (c *Synthra) TimeOr(key string, defaultVal time.Time) time.Time {
 	return cast.ToTime(val)
 }
 
-// StringSliceOr returns the value associated with the given key as a
-// slice of strings, or the default value if not found.
-//
-// Example:
-//
-//	tags := cfg.StringSliceOr("tags", []string{"default"})
+// StringSliceOr returns the value at key as a []string, or def if not found.
 func (c *Synthra) StringSliceOr(key string, defaultVal []string) []string {
 	if c == nil {
 		return defaultVal
@@ -447,12 +319,7 @@ func (c *Synthra) StringSliceOr(key string, defaultVal []string) []string {
 	return cast.ToStringSlice(val)
 }
 
-// IntSliceOr returns the value associated with the given key as a slice
-// of integers, or the default value if not found.
-//
-// Example:
-//
-//	ports := cfg.IntSliceOr("ports", []int{8080, 8081})
+// IntSliceOr returns the value at key as a []int, or the default if not found.
 func (c *Synthra) IntSliceOr(key string, defaultVal []int) []int {
 	if c == nil {
 		return defaultVal
@@ -464,12 +331,7 @@ func (c *Synthra) IntSliceOr(key string, defaultVal []int) []int {
 	return cast.ToIntSlice(val)
 }
 
-// StringMapOr returns the value associated with the given key as a
-// map[string]any, or the default value if not found.
-//
-// Example:
-//
-//	metadata := cfg.StringMapOr("metadata", map[string]any{"version": "1.0"})
+// StringMapOr returns the value at key as a map[string]any, or def if not found.
 func (c *Synthra) StringMapOr(key string, defaultVal map[string]any) map[string]any {
 	if c == nil {
 		return defaultVal
@@ -481,13 +343,14 @@ func (c *Synthra) StringMapOr(key string, defaultVal map[string]any) map[string]
 	return cast.ToStringMap(val)
 }
 
+// --- Helpers ---
+
 // getZeroValue returns a proper zero value for type T.
 // For slices and maps, it returns empty initialized values instead of nil.
 func getZeroValue[T any]() T {
 	var zero T
 	v := reflect.ValueOf(&zero).Elem()
 
-	// Initialize slices and maps to empty instead of nil
 	switch v.Kind() {
 	case reflect.Slice:
 		v.Set(reflect.MakeSlice(v.Type(), 0, 0))
@@ -499,13 +362,10 @@ func getZeroValue[T any]() T {
 }
 
 // convertToType attempts to convert a value to type T using the cast library.
-// This handles common type conversions (int, string, bool, etc.) but won't
-// work for custom types.
 func convertToType[T any](val any) (T, bool) {
 	var zero T
 	var result any
 
-	// Use type switch to handle common conversions
 	switch any(zero).(type) {
 	case string:
 		result = cast.ToString(val)
@@ -553,7 +413,6 @@ func convertToType[T any](val any) (T, bool) {
 		return zero, false
 	}
 
-	// Convert result back to T
 	if typedResult, ok := result.(T); ok {
 		return typedResult, true
 	}

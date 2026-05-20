@@ -41,7 +41,7 @@ func (s *FileDumperTestSuite) SetupTest() {
 func (s *FileDumperTestSuite) TestDump_Success() {
 	encoder := &mockEncoder{}
 	fileDumper := NewFile(s.tmpFile, encoder)
-	values := &map[string]any{"foo": "bar"}
+	values := map[string]any{"foo": "bar"}
 
 	err := fileDumper.Dump(context.Background(), values)
 	s.NoError(err)
@@ -55,7 +55,7 @@ func (s *FileDumperTestSuite) TestDump_Success() {
 func (s *FileDumperTestSuite) TestDump_EncodeError() {
 	encoder := &mockEncoder{err: errors.New("encode error")}
 	fileDumper := NewFile(s.tmpFile, encoder)
-	values := &map[string]any{"foo": "bar"}
+	values := map[string]any{"foo": "bar"}
 
 	err := fileDumper.Dump(context.Background(), values)
 	s.Error(err)
@@ -66,7 +66,7 @@ func (s *FileDumperTestSuite) TestDump_FileWriteError() {
 	encoder := &mockEncoder{}
 	// Use an invalid path to force a write error
 	fileDumper := NewFile("/invalid/path/shouldfail.json", encoder)
-	values := &map[string]any{"foo": "bar"}
+	values := map[string]any{"foo": "bar"}
 
 	err := fileDumper.Dump(context.Background(), values)
 	s.Error(err)
@@ -76,7 +76,7 @@ func (s *FileDumperTestSuite) TestDump_FileWriteError() {
 func (s *FileDumperTestSuite) TestNewFileWithPermissions_DumpWritesWithCustomPermissions() {
 	encoder := &mockEncoder{}
 	fileDumper := NewFileWithPermissions(s.tmpFile, encoder, 0o600)
-	values := &map[string]any{"foo": "bar"}
+	values := map[string]any{"foo": "bar"}
 
 	err := fileDumper.Dump(context.Background(), values)
 	s.Require().NoError(err)

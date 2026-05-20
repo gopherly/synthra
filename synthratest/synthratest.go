@@ -101,13 +101,13 @@ type Dumper struct {
 }
 
 // Dump records the call and optionally returns [Dumper.Err].
-func (d *Dumper) Dump(_ context.Context, values *map[string]any) error {
+func (d *Dumper) Dump(_ context.Context, values map[string]any) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls++
-	if values != nil && *values != nil {
-		cp := make(map[string]any, len(*values))
-		maps.Copy(cp, *values)
+	if values != nil {
+		cp := make(map[string]any, len(values))
+		maps.Copy(cp, values)
 		d.last = cp
 	}
 	return d.Err

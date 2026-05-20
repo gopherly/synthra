@@ -38,13 +38,13 @@ func buildCfg(t *testing.T, yaml []byte) (*synthra.Synthra, *App) {
 			}
 			return nil
 		}),
-		synthra.WithValidator(func(v *synthra.Values) error {
-			enabled := strings.EqualFold(fmt.Sprint(v.Get("server.tls.enabled")), "true")
+		synthra.WithValidator(func(r synthra.Reader) error {
+			enabled := strings.EqualFold(fmt.Sprint(r.Get("server.tls.enabled")), "true")
 			if !enabled {
 				return nil
 			}
-			cert := strings.TrimSpace(v.StringOr("server.tls.cert.file", ""))
-			key := strings.TrimSpace(v.StringOr("server.tls.key.file", ""))
+			cert := strings.TrimSpace(r.StringOr("server.tls.cert.file", ""))
+			key := strings.TrimSpace(r.StringOr("server.tls.key.file", ""))
 			if cert == "" || key == "" {
 				return errors.New("server.tls.cert.file and server.tls.key.file are required when TLS is enabled")
 			}

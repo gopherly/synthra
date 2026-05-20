@@ -315,12 +315,6 @@ func WithConsulAs(path string, decoder codec.Decoder) Option {
 	}
 }
 
-// consulNewSource is the constructor used by addConsulSource. It is a
-// package-level variable so tests can replace it without a real Consul server.
-var consulNewSource = func(path string, decoder codec.Decoder, kv source.ConsulKV) (Source, error) {
-	return source.NewConsul(path, decoder, kv)
-}
-
 func addConsulSource(cfg *config, opName, path string, decoder codec.Decoder) {
 	if os.Getenv("CONSUL_HTTP_ADDR") == "" {
 		cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, opName, errors.New("CONSUL_HTTP_ADDR is not set")))
@@ -329,7 +323,7 @@ func addConsulSource(cfg *config, opName, path string, decoder codec.Decoder) {
 
 	path = os.ExpandEnv(path)
 
-	l, err := consulNewSource(path, decoder, nil)
+	l, err := cfg.consulFactory(path, decoder, nil)
 	if err != nil {
 		cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, opName, err))
 		return
@@ -631,9 +625,12 @@ func WithJSONSchemaFunc(selector func(*Values) ([]byte, error)) Option {
 }
 
 // WithValidator adds a custom validation function as a pipeline step. It runs
-// a read-only check against the current [*Values] at the point in the pipeline
+// a read-only check against the current [Reader] at the point in the pipeline
 // where it was registered. Multiple validators run in registration order; the
 // first error stops the pipeline.
+//
+// The [Reader] interface is implemented by both [*Snapshot] and [*Values],
+// so validators can be reused as standalone checks against any config view.
 //
 // Panics inside the validator are recovered and reported as errors.
 // The function must not be nil.
@@ -646,15 +643,15 @@ func WithJSONSchemaFunc(selector func(*Values) ([]byte, error)) Option {
 //
 //	cfg, err := synthra.New(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithValidator(func(v *synthra.Values) error {
-//	        port := v.IntOr("port", 0)
+//	    synthra.WithValidator(func(r synthra.Reader) error {
+//	        port := r.IntOr("port", 0)
 //	        if port < 1 || port > 65535 {
 //	            return fmt.Errorf("port %d out of range", port)
 //	        }
 //	        return nil
 //	    }),
 //	)
-func WithValidator(fn func(*Values) error) Option {
+func WithValidator(fn func(Reader) error) Option {
 	return func(cfg *config) {
 		if fn == nil {
 			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithValidator", errors.New("validator cannot be nil")))
