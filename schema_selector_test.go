@@ -57,7 +57,7 @@ func schemaForVersion(version string) []byte {
 
 // versionSelector is a reusable selector that maps the "apiVersion" key to
 // the correct schema bytes using schemaForVersion above.
-func versionSelector(v *Values) ([]byte, error) {
+func versionSelector(_ context.Context, v *Configurable) ([]byte, error) {
 	ver := v.StringOr("apiVersion", "")
 	if ver == "" {
 		return nil, errors.New("apiVersion is required")
@@ -86,9 +86,9 @@ func TestWithJSONSchemaFunc_HappyPath(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"apiVersion": "v1",
 		})),
-		WithJSONSchemaFunc(func(v *Values) ([]byte, error) {
+		WithJSONSchemaFunc(func(ctx context.Context, v *Configurable) ([]byte, error) {
 			selectorGotVersion = v.StringOr("apiVersion", "")
-			return versionSelector(v)
+			return versionSelector(ctx, v)
 		}),
 	)
 	require.NoError(t, err)
@@ -146,7 +146,7 @@ func TestWithJSONSchemaFunc_SelectorErrorAbortsLoad(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithJSONSchemaFunc(func(_ *Values) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) {
 			return nil, sentinel
 		}),
 	)
@@ -167,7 +167,7 @@ func TestWithJSONSchemaFunc_InvalidSchemaBytesAbortsLoad(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithJSONSchemaFunc(func(_ *Values) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) {
 			return []byte(`not valid json`), nil
 		}),
 	)
@@ -249,7 +249,7 @@ func TestWithJSONSchemaFunc_TransformRunsAfterSchema(t *testing.T) {
 			"apiVersion": "v2",
 		})),
 		WithJSONSchemaFunc(versionSelector),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			if level, err := v.String("log_level"); err == nil {
 				return v.Set("log_level", strings.ToUpper(level))
 			}
@@ -284,7 +284,7 @@ func TestWithJSONSchemaFunc_ValidationFailsForInvalidValue(t *testing.T) {
 			"apiVersion": "v1",
 			"port":       "not-an-integer",
 		})),
-		WithJSONSchemaFunc(func(_ *Values) ([]byte, error) {
+		WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) {
 			return invalidSchema, nil
 		}),
 	)
@@ -348,8 +348,8 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 				"apiVersion": "v1",
 				"port":       8080,
 			})),
-			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return partialSchema, nil }),
-			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return fullSchema, nil }),
+			WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) { return fullSchema, nil }),
 		)
 		require.NoError(t, err)
 		require.NoError(t, cfg.Load(context.Background()))
@@ -362,8 +362,8 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 				// missing apiVersion — fails first schema
 				"port": 8080,
 			})),
-			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return partialSchema, nil }),
-			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return fullSchema, nil }),
+			WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) { return fullSchema, nil }),
 		)
 		require.NoError(t, err)
 		loadErr := cfg.Load(context.Background())
@@ -380,8 +380,8 @@ func TestWithJSONSchemaFunc_MultipleSchemas(t *testing.T) {
 				"apiVersion": "v1",
 				// missing port — passes partialSchema, fails fullSchema
 			})),
-			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return partialSchema, nil }),
-			WithJSONSchemaFunc(func(_ *Values) ([]byte, error) { return fullSchema, nil }),
+			WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) { return partialSchema, nil }),
+			WithJSONSchemaFunc(func(_ context.Context, _ *Configurable) ([]byte, error) { return fullSchema, nil }),
 		)
 		require.NoError(t, err)
 		loadErr := cfg.Load(context.Background())

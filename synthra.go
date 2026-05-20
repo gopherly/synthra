@@ -54,11 +54,11 @@ type config struct {
 //
 // Synthra is the runtime object returned by New/MustNew; use it for
 // Load, typed accessors (String, Int, ...), and Dump.
-// Use [Synthra.Snapshot] to obtain a lock-free, immutable point-in-time view.
+// Use [Synthra.Configuration] to obtain a lock-free, immutable point-in-time view.
 //
 // Synthra is safe for concurrent use by multiple goroutines.
 type Synthra struct {
-	snap         atomic.Pointer[Snapshot]
+	config       atomic.Pointer[Configuration]
 	loadMu       sync.Mutex // serializes Load + binding writes
 	sources      []Source
 	dumpers      []Dumper
@@ -97,7 +97,7 @@ func (cfg *config) build() *Synthra {
 		tagName:      cfg.tagName,
 		steps:        cfg.steps,
 	}
-	s.snap.Store(emptySnapshot())
+	s.config.Store(emptyConfiguration())
 	return s
 }
 
@@ -156,24 +156,25 @@ func MustNew(opts ...Option) *Synthra {
 	return cfg
 }
 
-// Snapshot returns the current immutable configuration snapshot. After Load
+// Configuration returns the current immutable configuration snapshot. After Load
 // completes successfully, this returns the loaded values. Before Load (or if
-// Load has never been called), it returns an empty snapshot.
+// Load has never been called), it returns an empty configuration.
 //
-// Snapshot is nil-safe: calling it on a nil *Synthra returns an empty snapshot.
+// Configuration is nil-safe: calling it on a nil *Synthra returns an
+// empty configuration.
 //
-// The returned *Snapshot is safe to hold and read from any goroutine without
+// The returned *Configuration is safe to hold and read from any goroutine without
 // additional synchronization. Successive calls to Load atomically replace
-// the snapshot; callers holding an older *Snapshot continue to see their
+// the configuration; callers holding an older *Configuration continue to see their
 // point-in-time view.
-func (c *Synthra) Snapshot() *Snapshot {
+func (c *Synthra) Configuration() *Configuration {
 	if c == nil {
-		return emptySnapshot()
+		return emptyConfiguration()
 	}
-	if p := c.snap.Load(); p != nil {
+	if p := c.config.Load(); p != nil {
 		return p
 	}
-	return emptySnapshot()
+	return emptyConfiguration()
 }
 
 // deepMerge merges src into dst recursively. When both dst and src have a map
@@ -265,7 +266,7 @@ func (c *Synthra) Load(ctx context.Context) error {
 	}
 
 	for i, s := range c.steps {
-		newValues, err = s.run(newValues)
+		newValues, err = s.run(ctx, newValues)
 		if err != nil {
 			return NewConfigError(OpLoad, fmt.Sprintf("step[%d]:%s", i, s.kind()), err)
 		}
@@ -304,7 +305,7 @@ func (c *Synthra) Load(ctx context.Context) error {
 		reflect.ValueOf(c.binding).Elem().Set(reflect.ValueOf(tempBinding).Elem())
 	}
 
-	c.snap.Store(&Snapshot{m: newValues})
+	c.config.Store(&Configuration{m: newValues})
 
 	return nil
 }
@@ -320,7 +321,7 @@ func (c *Synthra) Dump(ctx context.Context) error {
 		return NewConfigError(OpDump, "", ErrNilContext)
 	}
 
-	valuesCopy := maps.Clone(c.Snapshot().m)
+	valuesCopy := maps.Clone(c.Configuration().m)
 
 	for i, d := range c.dumpers {
 		if err := d.Dump(ctx, valuesCopy); err != nil {
@@ -334,7 +335,7 @@ func (c *Synthra) Dump(ctx context.Context) error {
 // Values returns a pointer to a shallow copy of the loaded configuration map.
 // If Load has not run yet, it returns a pointer to a new empty map.
 func (c *Synthra) Values() *map[string]any {
-	m := maps.Clone(c.Snapshot().m)
+	m := maps.Clone(c.Configuration().m)
 	return &m
 }
 
@@ -344,7 +345,7 @@ func (c *Synthra) Get(key string) any {
 	if c == nil || key == "" {
 		return nil
 	}
-	return c.Snapshot().Get(key)
+	return c.Configuration().Get(key)
 }
 
 // requireValue returns the raw value at key for strict typed accessors.
@@ -357,7 +358,7 @@ func (c *Synthra) requireValue(key string) (any, error) {
 	if key == "" {
 		return nil, fmt.Errorf("%w: empty key", ErrKeyNotFound)
 	}
-	v := c.Snapshot().Get(key)
+	v := c.Configuration().Get(key)
 	if v == nil {
 		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, key)
 	}

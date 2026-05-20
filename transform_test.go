@@ -43,7 +43,7 @@ func TestWithTransform_Single(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"log_level": "WARN",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			if level, err := v.String("log_level"); err == nil {
 				return v.Set("log_level", strings.ToLower(level))
 			}
@@ -66,7 +66,7 @@ func TestWithTransform_GetSetWithFoldMatch(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"LogLevel": "DEBUG",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			level := v.StringOr("loglevel", "")
 			if level != "" {
 				return v.Set("loglevel", strings.ToLower(level))
@@ -90,7 +90,7 @@ func TestWithTransform_WalkReplacesValues(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"env": "PROD",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			v.Walk(func(_ string, val any) (any, bool) {
 				if s, ok := val.(string); ok {
 					return strings.ToLower(s), true
@@ -116,13 +116,13 @@ func TestWithTransform_Chained(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"env": "PROD",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			if s, err := v.String("env"); err == nil {
 				return v.Set("env", strings.ToLower(s))
 			}
 			return nil
 		}),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			if s, err := v.String("env"); err == nil {
 				return v.Set("env", s+"-cluster")
 			}
@@ -152,7 +152,7 @@ func TestWithTransform_ErrorAbortsLoad(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithTransform(func(_ *Values) error {
+		WithTransform(func(_ context.Context, _ *Configurable) error {
 			return sentinel
 		}),
 	)
@@ -175,10 +175,10 @@ func TestWithTransform_SecondTransformErrorHasCorrectIndex(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithTransform(func(_ *Values) error {
+		WithTransform(func(_ context.Context, _ *Configurable) error {
 			return nil
 		}),
-		WithTransform(func(_ *Values) error {
+		WithTransform(func(_ context.Context, _ *Configurable) error {
 			return sentinel
 		}),
 	)
@@ -197,7 +197,7 @@ func TestWithTransform_NilReturnTreatedAsEmpty(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{"key": "value"})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			// Delete everything to simulate an effectively empty result.
 			_ = v.Delete("key")
 			return nil
@@ -217,7 +217,7 @@ func TestWithTransform_AddsNewKey(t *testing.T) {
 			"host": "example.com",
 			"port": "443",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			host := v.StringOr("host", "")
 			port := v.StringOr("port", "")
 			if host == "" || port == "" {
@@ -242,7 +242,7 @@ func TestWithTransform_RemovesKey(t *testing.T) {
 			"keep":   "yes",
 			"remove": "gone",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			v.Delete("remove")
 			return nil
 		}),
@@ -263,10 +263,10 @@ func TestWithTransform_PipelineSeesAddedKey(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"base": "value",
 		})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			return v.Set("derived", "from-first")
 		}),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			existing := v.StringOr("derived", "")
 			if existing != "" {
 				return v.Set("derived", existing+"-modified")
@@ -287,7 +287,7 @@ func TestWithTransform_EmptySourceMap(t *testing.T) {
 
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{})),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			return v.Set("injected", "hello")
 		}),
 	)
@@ -306,7 +306,7 @@ func TestWithEnvSubstFunc_SubstitutionError(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"key": "${UNCLOSED",
 		})),
-		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, _ *Configurable) (Resolver, error) {
 			return FromMap(map[string]string{}), nil
 		}),
 	)
@@ -336,7 +336,7 @@ func TestWithTransform_RunsAfterSchemaDefaults(t *testing.T) {
 	cfg, err := New(
 		WithSource(source.NewMap(map[string]any{})),
 		WithJSONSchema(schema),
-		WithTransform(func(v *Values) error {
+		WithTransform(func(_ context.Context, v *Configurable) error {
 			if level, err := v.String("log_level"); err == nil {
 				return v.Set("log_level", strings.ToUpper(level))
 			}
@@ -378,7 +378,7 @@ func TestWithEnvSubstFunc_ReceivesTypedValues(t *testing.T) {
 			"env":     "production",
 			"cluster": "${REGION}-cluster",
 		})),
-		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, v *Configurable) (Resolver, error) {
 			gotEnv = v.StringOr("env", "")
 			return FromMap(map[string]string{"REGION": "eu-west-1"}), nil
 		}),

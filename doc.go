@@ -87,9 +87,10 @@
 //     content-based schema routing at Load time
 //   - POSIX-style variable substitution ([WithEnvSubst]) and arbitrary
 //     transforms ([WithTransform]) can be interleaved with schema steps
-//   - Composable variable resolvers ([FromMap], [FromEnv], [FromEnvFile]) for
-//     maps, OS env, and .env files; prefix stripping via [Resolver.Prefix] and
-//     first-wins fallback chains via [Resolver.Or]
+//   - Composable variable resolvers ([FromMap], [FromEnv], [FromEnvFile],
+//     [FromEnvFileIfExists], [CoalesceEnvFile]) for maps, OS env, and .env
+//     files; optional and cascading file lookups; prefix stripping via
+//     [Resolver.Prefix] and first-wins fallback chains via [Resolver.Or]
 //   - Struct binding with automatic type conversion
 //   - Validation using JSON Schema or custom validators
 //   - Case-insensitive key access with dot notation
@@ -246,7 +247,7 @@
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("manifest.yaml"),
-//	    synthra.WithJSONSchemaFunc(func(v *synthra.Values) ([]byte, error) {
+//	    synthra.WithJSONSchemaFunc(func(ctx context.Context, v *synthra.Configurable) ([]byte, error) {
 //	        version, err := v.String("apiVersion")
 //	        if err != nil || version == "" {
 //	            return nil, errors.New("apiVersion is required")
@@ -321,7 +322,7 @@
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithTransform(func(v *synthra.Values) error {
+//	    synthra.WithTransform(func(_ context.Context, v *synthra.Configurable) error {
 //	        if level := v.StringOr("logLevel", ""); level != "" {
 //	            return v.Set("logLevel", strings.ToLower(level))
 //	        }
@@ -334,41 +335,67 @@
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithValidator(func(v *synthra.Values) error {
-//	        if port := v.IntOr("port", 0); port < 1 {
+//	    synthra.WithValidator(func(_ context.Context, c *synthra.Configuration) error {
+//	        if port := c.IntOr("port", 0); port < 1 {
 //	            return fmt.Errorf("invalid port: %d", port)
 //	        }
 //	        return nil
 //	    }),
 //	)
 //
+// To accumulate multiple validation errors in one pass, use [errors.Join] inside
+// a single [WithValidator] callback:
+//
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithValidator(func(_ context.Context, c *synthra.Configuration) error {
+//	        var errs []error
+//	        if c.StringOr("app.env", "") == "" {
+//	            errs = append(errs, errors.New("app.env is required"))
+//	        }
+//	        if c.IntOr("port", 0) < 1 {
+//	            errs = append(errs, errors.New("port must be positive"))
+//	        }
+//	        return errors.Join(errs...)
+//	    }),
+//	)
+//
 // Error paths for pipeline failures follow the pattern "step[N]:kind" where N
 // is the zero-based step index and kind is "schema", "transform", or "validator".
 //
-// # Pipeline callbacks and Values
+// # Pipeline callbacks and Configuration/Configurable
 //
-// Synthra's pipeline callbacks receive a [*Values] wrapper instead of a raw
-// map. The wrapper gives you safe, case-insensitive, typed access to the data
-// flowing through the pipeline.
+// Synthra's pipeline callbacks receive either a [*Configurable] or a
+// [*Configuration], depending on the callback type:
 //
-// Direct map access is case-sensitive at the Go language level. If your YAML
-// says `apiVersion` but the merged map ends up storing it under a slightly
-// different casing, `values["apiVersion"]` returns nil. The [*Values] wrapper
-// fixes that. All its methods are case-insensitive.
+//   - [WithTransform] and [WithEnvSubstFunc] receive a [*Configurable]: a
+//     mutable wrapper around the live map. Use Set, Delete, Walk, and Raw to
+//     modify the configuration as it flows through the pipeline.
+//   - [WithValidator] and [WithJSONSchemaFunc] receive a [*Configuration]: a
+//     read-only view. This enforces at the type level that validators must not
+//     mutate the map.
+//
+// [Configurable] embeds [Configuration], so all read methods are available on
+// both types. All methods are case-insensitive; dot notation addresses nested
+// maps.
+//
+// All pipeline callbacks receive a [context.Context] as the first argument,
+// enabling cancellation, timeouts, and tracing across transforms, validators,
+// env-subst resolvers, and schema selectors.
 //
 // Reading:
 //
-//	v.Get("metadata.name")         // any, case-insensitive
-//	v.Has("server.tls.enabled")    // bool
-//	v.String("apiVersion")         // (string, error)
-//	v.IntOr("server.port", 8080)   // int with default
+//	c.Get("metadata.name")         // any, case-insensitive
+//	c.Has("server.tls.enabled")    // bool
+//	c.String("apiVersion")         // (string, error)
+//	c.IntOr("server.port", 8080)   // int with default
 //
-// Writing:
+// Writing (only on *Configurable):
 //
 //	v.Set("metadata.region", "eu-west-1")  // creates intermediate maps
 //	v.Delete("debug.experimental")
 //
-// Walking the tree:
+// Walking the tree (only on *Configurable):
 //
 //	v.Walk(func(path string, val any) (any, bool) {
 //	    if s, ok := val.(string); ok && strings.HasPrefix(s, "${") {
@@ -378,12 +405,42 @@
 //	})
 //
 // When you must hand the underlying map to code that expects a plain
-// `map[string]any`, call `v.Raw()`. Mutations on the returned map are visible
-// through the same [*Values].
+// `map[string]any`, call `v.Raw()` on [*Configurable]. Mutations on the
+// returned map are visible through the same [*Configurable].
+//
+// # Array-of-object navigation
+//
+// When a configuration key holds a slice of objects (e.g. an "environments"
+// array), use the following methods to avoid `.([]any)` / `.(map[string]any)`
+// type assertions in user code. All four methods are nil-safe.
+//
+//   - [*Configuration.SliceLen]: returns the length of the slice at path (0 if
+//     missing or non-slice).
+//   - [*Configuration.EachMap]: returns an iterator over map elements; non-map
+//     elements in the slice are silently skipped.
+//   - [*Configuration.Find]: returns the first map element where a named field
+//     equals a match string (case-insensitive via StringOr).
+//   - [*Configuration.FindFunc]: returns the first map element for which a
+//     predicate returns true; short-circuits as soon as a match is found.
+//
+// [*Configurable] shadows EachMap, Find, and FindFunc to return [*Configurable]
+// wrappers instead of [*Configuration]. Mutations on an element returned by
+// Find or iterated by EachMap reach back into the parent's underlying map.
+//
+// Example: pick an environment by name and build a resolver:
+//
+//	selected := v.Find("environments", "name", envName)
+//	if selected == nil {
+//	    return nil, fmt.Errorf("environment %q not found", envName)
+//	}
+//	cascade, err := synthra.CoalesceEnvFile(".env."+selected.StringOr("name", ""), ".env")
+//	if err != nil {
+//	    return nil, err
+//	}
 //
 // [WithTransform], [WithValidator], [WithEnvSubstFunc], and
 // [WithJSONSchemaFunc] run at the map stage, before binding, on the merged
-// [*Values].
+// [*Configurable] or [*Configuration].
 //
 // [OnBound] is a binding-scoped option that goes inside [WithBinding]. It runs
 // at the binding stage: after the bound struct is decoded and defaults applied,
@@ -394,7 +451,7 @@
 // Example combining both stages:
 //
 //	synthra.WithFile("config.yaml"),
-//	synthra.WithTransform(func(v *synthra.Values) error {
+//	synthra.WithTransform(func(_ context.Context, v *synthra.Configurable) error {
 //	    if v.StringOr("env", "dev") == "prod" {
 //	        return v.Set("logging.level", "warn")
 //	    }
@@ -416,9 +473,9 @@
 //	    synthra.OnBound(func(a *App) error { ... }),  // compile error
 //	)
 //
-// [*Values] is not safe for concurrent use. Each Load creates its own; do not
-// share one across goroutines. Only one [WithBinding] per Synthra instance is
-// supported.
+// [*Configurable] is not safe for concurrent use. Each Load creates
+// its own; do not share one across goroutines. Only one [WithBinding]
+// per Synthra instance is supported.
 //
 // # Accessing Configuration Values
 //
@@ -503,7 +560,9 @@
 //
 // For debugging or custom serialization, [*Synthra.Values] returns a shallow
 // copy of the merged top-level map. Nested maps, slices, and pointers are not
-// deep-copied; do not mutate nested values. Treat the snapshot as read-only.
+// deep-copied; do not mutate nested values. Treat the result as read-only.
+// To get the live configuration as a [*Configuration], use
+// [Synthra.Configuration].
 //
 // # Error Handling
 //
@@ -552,6 +611,7 @@
 //   - examples/codecs: WithFileAs (JSON, TOML) and WithFileDumperAs (YAML dump)
 //   - examples/envsubst-layered: three-layer Resolver.Or precedence
 //   - examples/multi-schema: two-phase validation with WithJSONSchemaFunc
+//     and EachMap
 //   - examples/consul: optional Consul source with WithIf
 //
 // For more details, see the package documentation at

@@ -15,6 +15,7 @@
 package synthra
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -560,7 +561,7 @@ func WithJSONSchema(schema []byte) Option {
 			return
 		}
 		cfg.steps = append(cfg.steps, &schemaStep{
-			selector: func(_ map[string]any) ([]byte, error) {
+			selector: func(_ context.Context, _ map[string]any) ([]byte, error) {
 				return schema, nil
 			},
 		})
@@ -568,10 +569,11 @@ func WithJSONSchema(schema []byte) Option {
 }
 
 // WithJSONSchemaFunc registers a dynamic schema resolver as a pipeline step.
-// The selector is called during [Synthra.Load] with the current [*Values] and
-// returns the JSON Schema bytes to use at that point in the pipeline. This
-// enables the schema to be chosen based on a value already present in the
-// config — for example an apiVersion field — without requiring a two-pass read.
+// The selector is called during [Synthra.Load] with the current
+// [context.Context] and [*Configurable] and returns the JSON Schema bytes to
+// use at that point in the pipeline. This enables the schema to be chosen
+// based on a value already present in the config — for example an apiVersion
+// field — without requiring a two-pass read.
 //
 // The bytes returned by the selector are compiled and the schema's "default"
 // values are extracted and applied before validation runs, exactly as with
@@ -593,7 +595,7 @@ func WithJSONSchema(schema []byte) Option {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("deployah.yaml"),
-//	    synthra.WithJSONSchemaFunc(func(v *synthra.Values) ([]byte, error) {
+//	    synthra.WithJSONSchemaFunc(func(ctx context.Context, v *synthra.Configurable) ([]byte, error) {
 //	        version := v.StringOr("apiVersion", "")
 //	        if version == "" {
 //	            return nil, errors.New("apiVersion is required")
@@ -610,7 +612,7 @@ func WithJSONSchema(schema []byte) Option {
 //	    synthra.WithEnvSubst(synthra.FromEnv()),         // substitute variables
 //	    synthra.WithJSONSchemaFunc(manifestSchema),     // validate substituted manifest
 //	)
-func WithJSONSchemaFunc(selector func(*Values) ([]byte, error)) Option {
+func WithJSONSchemaFunc(selector func(context.Context, *Configurable) ([]byte, error)) Option {
 	return func(cfg *config) {
 		if selector == nil {
 			cfg.validationErrors = append(cfg.validationErrors,
@@ -618,20 +620,17 @@ func WithJSONSchemaFunc(selector func(*Values) ([]byte, error)) Option {
 			return
 		}
 		cfg.steps = append(cfg.steps, &schemaStep{
-			selector: func(m map[string]any) ([]byte, error) {
-				return selector(newValues(m))
+			selector: func(ctx context.Context, m map[string]any) ([]byte, error) {
+				return selector(ctx, newConfigurable(m))
 			},
 		})
 	}
 }
 
 // WithValidator adds a custom validation function as a pipeline step. It runs
-// a read-only check against the current [Reader] at the point in the pipeline
-// where it was registered. Multiple validators run in registration order; the
-// first error stops the pipeline.
-//
-// The [Reader] interface is implemented by both [*Snapshot] and [*Values],
-// so validators can be reused as standalone checks against any config view.
+// a read-only check against the current [*Configuration] at the point in the
+// pipeline where it was registered. Multiple validators run in registration
+// order; the first error stops the pipeline.
 //
 // Panics inside the validator are recovered and reported as errors.
 // The function must not be nil.
@@ -640,26 +639,29 @@ func WithJSONSchemaFunc(selector func(*Values) ([]byte, error)) Option {
 // with Op [OpLoad] and Path "step[N]:validator" where N is the zero-based
 // index of this step.
 //
+// Use [errors.Join] inside a single validator to report all failures at once
+// without adding new API.
+//
 // Example:
 //
 //	cfg, err := synthra.New(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithValidator(func(r synthra.Reader) error {
-//	        port := r.IntOr("port", 0)
+//	    synthra.WithValidator(func(ctx context.Context, c *synthra.Configuration) error {
+//	        port := c.IntOr("port", 0)
 //	        if port < 1 || port > 65535 {
 //	            return fmt.Errorf("port %d out of range", port)
 //	        }
 //	        return nil
 //	    }),
 //	)
-func WithValidator(fn func(Reader) error) Option {
+func WithValidator(fn func(context.Context, *Configuration) error) Option {
 	return func(cfg *config) {
 		if fn == nil {
 			cfg.validationErrors = append(cfg.validationErrors, NewConfigError(OpNew, "WithValidator", errors.New("validator cannot be nil")))
 			return
 		}
-		cfg.steps = append(cfg.steps, &validatorStep{fn: func(m map[string]any) error {
-			return fn(newValues(m))
+		cfg.steps = append(cfg.steps, &validatorStep{fn: func(ctx context.Context, m map[string]any) error {
+			return fn(ctx, &Configuration{m: m})
 		}})
 	}
 }
@@ -668,10 +670,10 @@ func WithValidator(fn func(Reader) error) Option {
 // as a pipeline step. The transform runs at the point in the pipeline where it
 // was registered, after any preceding steps have completed.
 //
-// The function receives the current [*Values] and mutates it in place.
-// Returning an error aborts Load with a [*ConfigError] whose Path identifies
-// the failing step by its index and kind ("step[0]:transform",
-// "step[1]:transform", ...).
+// The function receives the current [context.Context] and [*Configurable] and
+// mutates it in place. Returning an error aborts Load with a [*ConfigError]
+// whose Path identifies the failing step by its index and kind
+// ("step[0]:transform", "step[1]:transform", ...).
 //
 // Multiple transforms are applied in registration order.
 //
@@ -679,7 +681,7 @@ func WithValidator(fn func(Reader) error) Option {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithTransform(func(v *synthra.Values) error {
+//	    synthra.WithTransform(func(ctx context.Context, v *synthra.Configurable) error {
 //	        if level, err := v.String("log_level"); err == nil {
 //	            return v.Set("log_level", strings.ToLower(level))
 //	        }
@@ -687,7 +689,7 @@ func WithValidator(fn func(Reader) error) Option {
 //	    }),
 //	    synthra.WithJSONSchema(schema),
 //	)
-func WithTransform(fn func(*Values) error) Option {
+func WithTransform(fn func(context.Context, *Configurable) error) Option {
 	return func(cfg *config) {
 		if fn == nil {
 			cfg.validationErrors = append(cfg.validationErrors,
@@ -695,9 +697,9 @@ func WithTransform(fn func(*Values) error) Option {
 			return
 		}
 		cfg.steps = append(cfg.steps, &transformStep{
-			fn: func(m map[string]any) (map[string]any, error) {
-				v := newValues(m)
-				if err := fn(v); err != nil {
+			fn: func(ctx context.Context, m map[string]any) (map[string]any, error) {
+				v := newConfigurable(m)
+				if err := fn(ctx, v); err != nil {
 					return nil, err
 				}
 				return v.m, nil
@@ -771,19 +773,19 @@ func WithEnvSubst(r Resolver) Option {
 				NewConfigError(OpNew, "WithEnvSubst", errors.New("resolver cannot be nil")))
 			return
 		}
-		cfg.steps = append(cfg.steps, &transformStep{fn: func(values map[string]any) (map[string]any, error) {
-			v := newValues(values)
-			if err := envsubstMap(v.m, r, ""); err != nil {
+		cfg.steps = append(cfg.steps, &transformStep{fn: func(_ context.Context, values map[string]any) (map[string]any, error) {
+			if err := envsubstMap(values, r, ""); err != nil {
 				return nil, fmt.Errorf("envsubst: %w", err)
 			}
-			return v.m, nil
+			return values, nil
 		}})
 	}
 }
 
 // WithEnvSubstFunc expands ${VAR} placeholders using a [Resolver] that is
 // determined dynamically at Load time. The callback receives the current
-// [*Values] and returns a Resolver (or an error that stops the pipeline).
+// [context.Context] and [*Configurable] and returns a Resolver (or an error
+// that stops the pipeline).
 //
 // This follows the same pattern as [WithJSONSchemaFunc]: the Func suffix
 // means "the input to this step is determined at Load time from the
@@ -797,7 +799,7 @@ func WithEnvSubst(r Resolver) Option {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvSubstFunc(func(v *synthra.Values) (synthra.Resolver, error) {
+//	    synthra.WithEnvSubstFunc(func(ctx context.Context, v *synthra.Configurable) (synthra.Resolver, error) {
 //	        envPath := v.StringOr("envfile", "")
 //	        if envPath == "" {
 //	            return synthra.FromEnv(), nil
@@ -810,7 +812,7 @@ func WithEnvSubst(r Resolver) Option {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvSubstFunc(func(_ *synthra.Values) (synthra.Resolver, error) {
+//	    synthra.WithEnvSubstFunc(func(ctx context.Context, _ *synthra.Configurable) (synthra.Resolver, error) {
 //	        client, err := vault.NewClient(vault.DefaultConfig())
 //	        if err != nil {
 //	            return nil, fmt.Errorf("vault client: %w", err)
@@ -825,16 +827,16 @@ func WithEnvSubst(r Resolver) Option {
 //	        }, nil
 //	    }),
 //	)
-func WithEnvSubstFunc(fn func(*Values) (Resolver, error)) Option {
+func WithEnvSubstFunc(fn func(context.Context, *Configurable) (Resolver, error)) Option {
 	return func(cfg *config) {
 		if fn == nil {
 			cfg.validationErrors = append(cfg.validationErrors,
 				NewConfigError(OpNew, "WithEnvSubstFunc", errors.New("resolver function cannot be nil")))
 			return
 		}
-		cfg.steps = append(cfg.steps, &transformStep{fn: func(values map[string]any) (map[string]any, error) {
-			v := newValues(values)
-			resolver, err := fn(v)
+		cfg.steps = append(cfg.steps, &transformStep{fn: func(ctx context.Context, values map[string]any) (map[string]any, error) {
+			v := newConfigurable(values)
+			resolver, err := fn(ctx, v)
 			if err != nil {
 				return nil, fmt.Errorf("envsubst: %w", err)
 			}

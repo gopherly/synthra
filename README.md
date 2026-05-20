@@ -86,7 +86,7 @@ Most Go services load configuration from more than one place. A YAML file holds 
 6. [Default values](#default-values)
 7. [JSON Schema defaults](#json-schema-defaults)
 8. [Pipeline](#pipeline)
-9. [Pipeline callbacks and Values](#pipeline-callbacks-and-values)
+9. [Pipeline callbacks and Configuration/Configurable](#pipeline-callbacks-and-configurationconfigurable)
 10. [Validation](#validation)
 11. [Reading values](#reading-values)
 12. [Merge order and precedence](#merge-order-and-precedence)
@@ -445,7 +445,7 @@ Use `WithJSONSchemaFunc` when the schema depends on a value inside the config it
 ```go
 cfg := synthra.MustNew(
     synthra.WithFile("manifest.yaml"),
-    synthra.WithJSONSchemaFunc(func(v *synthra.Values) ([]byte, error) {
+    synthra.WithJSONSchemaFunc(func(_ context.Context, v *synthra.Configurable) ([]byte, error) {
         version, err := v.String("apiVersion")
         if err != nil || version == "" {
             return nil, errors.New("apiVersion is required")
@@ -465,13 +465,13 @@ Register a schema step before substitution to validate raw fields, then register
 cfg := synthra.MustNew(
     synthra.WithFile("manifest.yaml"),
     // Step 1: validate the "environments" block on raw values.
-    synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
+    synthra.WithJSONSchemaFunc(func(_ context.Context, _ *synthra.Configurable) ([]byte, error) {
         return environmentsSchema, nil
     }),
     // Step 2: expand ${VAR} placeholders from OS environment.
     synthra.WithEnvSubst(synthra.FromEnv()),
     // Step 3: validate the fully-substituted manifest.
-    synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
+    synthra.WithJSONSchemaFunc(func(_ context.Context, _ *synthra.Configurable) ([]byte, error) {
         return manifestSchema, nil
     }),
 )
@@ -486,7 +486,7 @@ See [`examples/multi-schema`](./examples/multi-schema) for a runnable demonstrat
 ```go
 s := synthra.MustNew(
     synthra.WithFile("config.yaml"),
-    synthra.WithTransform(func(v *synthra.Values) error {
+    synthra.WithTransform(func(_ context.Context, v *synthra.Configurable) error {
         if level := v.StringOr("logLevel", ""); level != "" {
             return v.Set("logLevel", strings.ToLower(level))
         }
@@ -597,7 +597,7 @@ Use `WithEnvSubstFunc` when the resolver depends on values already loaded from s
 ```go
 s := synthra.MustNew(
     synthra.WithFile("config.yaml"),
-    synthra.WithEnvSubstFunc(func(v *synthra.Values) (synthra.Resolver, error) {
+    synthra.WithEnvSubstFunc(func(_ context.Context, v *synthra.Configurable) (synthra.Resolver, error) {
         envPath := v.StringOr("envfile", "")
         if envPath == "" {
             return synthra.FromEnv(), nil
@@ -621,31 +621,38 @@ Both can be used together. They do not overlap.
 
 `WithEnvSubst` also works with `patternProperties` defaults. If the schema default for a field is `".env.${NAME}"`, the substitution runs after the default is applied and fills in the placeholder.
 
-## Pipeline callbacks and Values
+## Pipeline callbacks and Configuration/Configurable
 
-`WithTransform`, `WithValidator`, `WithEnvSubstFunc`, and `WithJSONSchemaFunc` receive a `*synthra.Values` wrapper instead of a raw `map[string]any`. The wrapper gives you safe, case-insensitive, typed access.
+`WithTransform`, `WithEnvSubstFunc`, `WithValidator`, and `WithJSONSchemaFunc` receive typed wrappers instead of a raw `map[string]any`. The wrappers give you safe, case-insensitive, typed access.
 
-### Why *Values
+- **`WithTransform`** and **`WithEnvSubstFunc`** receive `*synthra.Configurable` — the mutable view. Use `Set`, `Delete`, `Walk`, and `Raw` to modify the configuration.
+- **`WithValidator`** and **`WithJSONSchemaFunc`** receive `*synthra.Configuration` — the read-only view. Enforced at the type level: validators cannot mutate the map.
 
-Direct map access is case-sensitive at the Go language level. If your YAML says `apiVersion` but the merged map ends up storing it under a slightly different casing, `values["apiVersion"]` returns nil. The `*Values` wrapper fixes that. All its methods are case-insensitive.
+`Configurable` embeds `Configuration`, so all read methods are available on both types.
+
+All callbacks receive a `context.Context` as the first argument, enabling cancellation, timeouts, and tracing.
+
+### Why typed wrappers
+
+Direct map access is case-sensitive at the Go language level. If your YAML says `apiVersion` but the merged map ends up storing it under a slightly different casing, `values["apiVersion"]` returns nil. The wrappers fix that. All methods are case-insensitive.
 
 ### Reading
 
 ```go
-v.Get("metadata.name")         // any, case-insensitive
-v.Has("server.tls.enabled")    // bool
-v.String("apiVersion")         // (string, error)
-v.IntOr("server.port", 8080)   // int with default
+c.Get("metadata.name")         // any, case-insensitive
+c.Has("server.tls.enabled")    // bool
+c.String("apiVersion")         // (string, error)
+c.IntOr("server.port", 8080)   // int with default
 ```
 
-### Writing
+### Writing (only on *Configurable)
 
 ```go
 _ = v.Set("metadata.region", "eu-west-1") // creates intermediate maps
 v.Delete("debug.experimental")
 ```
 
-### Walking the tree
+### Walking the tree (only on *Configurable)
 
 ```go
 v.Walk(func(path string, val any) (any, bool) {
@@ -656,19 +663,46 @@ v.Walk(func(path string, val any) (any, bool) {
 })
 ```
 
+### Array-of-object navigation
+
+When a key holds a slice of objects (e.g. an "environments" array), use the built-in accessors to avoid `.([]any)` / `.(map[string]any)` type assertions:
+
+```go
+// Count elements
+n := v.SliceLen("environments")
+
+// Iterate map elements (non-map elements are skipped)
+for i, e := range v.EachMap("environments") {
+    fmt.Println(i, e.StringOr("name", ""))
+}
+
+// Find by field value (case-insensitive)
+env := v.Find("environments", "name", "prod")
+if env == nil {
+    return errors.New("environment prod not found")
+}
+
+// Find with a predicate (short-circuits on first match)
+env = v.FindFunc("environments", func(e *synthra.Configurable) bool {
+    return e.IntOr("port", 0) == 443
+})
+```
+
+Elements returned by `Find` and `EachMap` on `*Configurable` share the parent's underlying map: mutations via `Set`/`Delete` reach back to the parent.
+
 ### Escape hatch
 
-When you must hand the underlying map to code that expects a plain `map[string]any`, call `v.Raw()`. Mutations on the returned map are visible through the same `*Values`.
+When you must hand the underlying map to code that expects a plain `map[string]any`, call `v.Raw()` on `*Configurable`. Mutations on the returned map are visible through the same `*Configurable`.
 
 ### Map stage vs binding stage
 
-`WithTransform`, `WithValidator`, `WithEnvSubstFunc`, and `WithJSONSchemaFunc` run at the map stage, before binding, on the merged `*Values`.
+`WithTransform`, `WithValidator`, `WithEnvSubstFunc`, and `WithJSONSchemaFunc` run at the map stage, before binding.
 
-`OnBound[T]` is a binding-scoped option that goes inside `WithBinding[T]`. It runs at the binding stage: after the bound struct is decoded and defaults applied, but before its `Validate()` method (if it implements the `Validator` interface). The type parameter is inferred from the closure, and the compiler enforces that it matches the binding target.
+`OnBound[T]` is a binding-scoped option that goes inside `WithBinding[T]`. It runs at the binding stage: after the bound struct is decoded and defaults applied, but before its `Validate()` method.
 
 ```go
 synthra.WithFile("config.yaml"),
-synthra.WithTransform(func(v *synthra.Values) error {
+synthra.WithTransform(func(_ context.Context, v *synthra.Configurable) error {
     if v.StringOr("env", "dev") == "prod" {
         return v.Set("logging.level", "warn")
     }
@@ -772,16 +806,31 @@ Synthra supports JSON Schema Draft 4, Draft 6, Draft 7, Draft 2019-09, and Draft
 Use `WithValidator` for cross-field rules or any logic that does not fit a schema.
 
 ```go
-synthra.WithValidator(func(v *synthra.Values) error {
-    if !v.Has("server.tls") {
+synthra.WithValidator(func(_ context.Context, c *synthra.Configuration) error {
+    if !c.Has("server.tls") {
         return nil
     }
-    if enabled := v.BoolOr("server.tls.enabled", false); enabled {
-        if !v.Has("server.tls.cert") || !v.Has("server.tls.key") {
+    if enabled := c.BoolOr("server.tls.enabled", false); enabled {
+        if !c.Has("server.tls.cert") || !c.Has("server.tls.key") {
             return errors.New("tls.cert and tls.key are required when tls.enabled is true")
         }
     }
     return nil
+})
+```
+
+To report multiple errors at once in a single validator, use `errors.Join`:
+
+```go
+synthra.WithValidator(func(_ context.Context, c *synthra.Configuration) error {
+    var errs []error
+    if c.StringOr("app.env", "") == "" {
+        errs = append(errs, errors.New("app.env is required"))
+    }
+    if c.IntOr("port", 0) < 1 {
+        errs = append(errs, errors.New("port must be positive"))
+    }
+    return errors.Join(errs...)
 })
 ```
 
@@ -1092,7 +1141,7 @@ The [`examples/`](./examples) folder has small, runnable programs. Each one has 
 | [`hooks`](./examples/hooks) | `WithTransform`, `WithValidator`, and `OnBound[T]` in one pipeline |
 | [`codecs`](./examples/codecs) | `WithFileAs` (JSON, TOML) and `WithFileDumperAs` (YAML dump) |
 | [`envsubst-layered`](./examples/envsubst-layered) | Three-layer `Resolver.Or` precedence |
-| [`multi-schema`](./examples/multi-schema) | Two-phase validation with `WithJSONSchemaFunc` |
+| [`multi-schema`](./examples/multi-schema) | Two-phase validation with `WithJSONSchemaFunc` and `EachMap` |
 | [`consul`](./examples/consul) | Optional Consul source via `WithIf` |
 
 Run them all with:

@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/log"
@@ -568,6 +570,16 @@ type failingDecoder struct{ msg string }
 
 func (d *failingDecoder) Decode(_ []byte, _ any) error {
 	return errors.New(d.msg)
+}
+
+// TestNewConsul_ClientCreationError covers the error branch when
+// api.NewClient fails.
+func TestNewConsul_ClientCreationError(t *testing.T) {
+	t.Setenv("CONSUL_HTTP_ADDR", "bogus://localhost:8500")
+
+	_, err := NewConsul("test/key", codec.JSON, nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "failed to create consul client")
 }
 
 // TestLoad_MockDecodeFailure uses a mock KV that returns a valid KVPair but

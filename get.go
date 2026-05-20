@@ -72,7 +72,7 @@ func GetOr[T any](c *Synthra, key string, defaultVal T) T {
 		return defaultVal
 	}
 
-	val := c.Snapshot().Get(key)
+	val := c.Configuration().Get(key)
 	if val == nil {
 		return defaultVal
 	}

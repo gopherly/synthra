@@ -15,7 +15,9 @@
 package synthra
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/hashicorp/go-envparse"
@@ -216,4 +218,64 @@ func FromEnvFile(path string) (Resolver, error) {
 	}
 
 	return FromMap(m), nil
+}
+
+// FromEnvFileIfExists returns a Resolver backed by the .env file at path.
+// If the file does not exist, a no-op Resolver and nil error are returned.
+// Parse errors on an existing file are returned unchanged.
+//
+// Use this instead of [FromEnvFile] when the .env file is optional. To fall
+// back across multiple candidates in order, see [CoalesceEnvFile].
+//
+// Example — OS env takes priority, .env is optional:
+//
+//	r, err := synthra.FromEnvFileIfExists(".env")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubst(synthra.FromEnv().Or(r)),
+//	)
+func FromEnvFileIfExists(path string) (Resolver, error) {
+	r, err := FromEnvFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return func(string) (string, bool) { return "", false }, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// CoalesceEnvFile returns a Resolver backed by the first existing path in the
+// list. Missing paths are silently skipped. A parse error on a found file is
+// returned and halts the search. With no paths or all paths missing, a no-op
+// Resolver and nil error are returned.
+//
+// Follows SQL COALESCE semantics: first non-missing argument wins. To compose
+// the returned Resolver with other sources, use [Resolver.Or].
+//
+// Example — try environment-specific file, then shared .env:
+//
+//	r, err := synthra.CoalesceEnvFile(".env."+env, ".env")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	cfg := synthra.MustNew(
+//	    synthra.WithFile("config.yaml"),
+//	    synthra.WithEnvSubst(synthra.FromEnv().Or(r)),
+//	)
+func CoalesceEnvFile(paths ...string) (Resolver, error) {
+	for _, p := range paths {
+		r, err := FromEnvFile(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return r, nil
+	}
+	return func(string) (string, bool) { return "", false }, nil
 }

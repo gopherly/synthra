@@ -378,3 +378,86 @@ func writeTempEnvFile(t *testing.T, content string) string {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	return path
 }
+
+func TestFromEnvFileIfExists(t *testing.T) {
+	t.Run("existing file is loaded", func(t *testing.T) {
+		path := writeTempEnvFile(t, "PORT=9000\n")
+		r, err := FromEnvFileIfExists(path)
+		require.NoError(t, err)
+		val, ok := r("PORT")
+		assert.True(t, ok)
+		assert.Equal(t, "9000", val)
+	})
+
+	t.Run("missing file returns no-op resolver and nil error", func(t *testing.T) {
+		r, err := FromEnvFileIfExists(filepath.Join(t.TempDir(), ".env"))
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		_, ok := r("ANY")
+		assert.False(t, ok)
+	})
+
+	t.Run("malformed existing file returns error", func(t *testing.T) {
+		path := writeTempEnvFile(t, "NOEQUALSSIGN\n")
+		_, err := FromEnvFileIfExists(path)
+		require.Error(t, err)
+	})
+}
+
+func TestCoalesceEnvFile(t *testing.T) {
+	t.Run("empty paths returns no-op resolver", func(t *testing.T) {
+		r, err := CoalesceEnvFile()
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		_, ok := r("ANY")
+		assert.False(t, ok)
+	})
+
+	t.Run("all paths missing returns no-op resolver", func(t *testing.T) {
+		dir := t.TempDir()
+		r, err := CoalesceEnvFile(
+			filepath.Join(dir, ".env.prod"),
+			filepath.Join(dir, ".env.staging"),
+			filepath.Join(dir, ".env"),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		_, ok := r("ANY")
+		assert.False(t, ok)
+	})
+
+	t.Run("first existing file wins", func(t *testing.T) {
+		dir := t.TempDir()
+		first := filepath.Join(dir, ".env.prod")
+		second := filepath.Join(dir, ".env")
+		require.NoError(t, os.WriteFile(first, []byte("PORT=443\n"), 0o600))
+		require.NoError(t, os.WriteFile(second, []byte("PORT=8080\n"), 0o600))
+
+		r, err := CoalesceEnvFile(first, second)
+		require.NoError(t, err)
+		val, ok := r("PORT")
+		assert.True(t, ok)
+		assert.Equal(t, "443", val)
+	})
+
+	t.Run("first missing, second found", func(t *testing.T) {
+		dir := t.TempDir()
+		second := filepath.Join(dir, ".env")
+		require.NoError(t, os.WriteFile(second, []byte("HOST=db.local\n"), 0o600))
+
+		r, err := CoalesceEnvFile(filepath.Join(dir, ".env.prod"), second)
+		require.NoError(t, err)
+		val, ok := r("HOST")
+		assert.True(t, ok)
+		assert.Equal(t, "db.local", val)
+	})
+
+	t.Run("parse error on found file halts cascade and returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		bad := filepath.Join(dir, ".env.bad")
+		require.NoError(t, os.WriteFile(bad, []byte("NOEQUALSSIGN\n"), 0o600))
+
+		_, err := CoalesceEnvFile(bad)
+		require.Error(t, err)
+	})
+}

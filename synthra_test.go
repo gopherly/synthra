@@ -1427,14 +1427,14 @@ func TestValidation(t *testing.T) {
 	tests := []struct {
 		name      string
 		conf      map[string]any
-		validator func(Reader) error
+		validator func(context.Context, *Configuration) error
 		wantErr   bool
 		errMsg    string
 	}{
 		{
 			name: "validator passes",
 			conf: map[string]any{"foo": "baz"},
-			validator: func(r Reader) error {
+			validator: func(_ context.Context, r *Configuration) error {
 				if r.StringOr("foo", "") != "baz" {
 					return errors.New("foo must be 'baz'")
 				}
@@ -1445,7 +1445,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator fails",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(r Reader) error {
+			validator: func(_ context.Context, r *Configuration) error {
 				if r.StringOr("foo", "") != "baz" {
 					return errors.New("foo must be 'baz'")
 				}
@@ -1456,7 +1456,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator panic with string is caught",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(_ Reader) error {
+			validator: func(_ context.Context, _ *Configuration) error {
 				panic("validator panic")
 			},
 			wantErr: true,
@@ -1464,7 +1464,7 @@ func TestValidation(t *testing.T) {
 		{
 			name: "validator panic with error type is caught",
 			conf: map[string]any{"foo": "bar"},
-			validator: func(_ Reader) error {
+			validator: func(_ context.Context, _ *Configuration) error {
 				panic(errors.New("typed panic error"))
 			},
 			wantErr: true,
@@ -3025,9 +3025,9 @@ func TestDecodeBindingInto_EmptyTagNameFallback(t *testing.T) {
 	assert.Equal(t, 8080, target.Port)
 }
 
-// TestSynthraNilSnap covers the Snapshot() and Dump() paths when Synthra is
-// constructed directly without calling build (nil snap pointer).
-func TestSynthraNilSnap(t *testing.T) {
+// TestSynthraNilConfig covers the Configuration() and Dump() paths when Synthra is
+// constructed directly without calling build (nil config pointer).
+func TestSynthraNilConfig(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Values returns empty map", func(t *testing.T) {

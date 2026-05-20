@@ -549,7 +549,7 @@ func TestWithEnvSubst_ErrorIndexWhenCombinedWithTransform(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"host": "${MISSING_COMBINED_VAR}",
 		})),
-		WithTransform(func(_ *Values) error {
+		WithTransform(func(_ context.Context, _ *Configurable) error {
 			return nil
 		}),
 		WithEnvSubst(FromMap(map[string]string{})),
@@ -627,7 +627,7 @@ func TestWithEnvSubstFunc_Success(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"greeting": "hello ${NAME}",
 		})),
-		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, _ *Configurable) (Resolver, error) {
 			return FromMap(map[string]string{"NAME": "world"}), nil
 		}),
 	)
@@ -648,7 +648,7 @@ func TestWithEnvSubstFunc_CallbackError(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"val": "${X}",
 		})),
-		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, _ *Configurable) (Resolver, error) {
 			return nil, sentinel
 		}),
 	)
@@ -675,7 +675,7 @@ func TestWithEnvSubstFunc_DynamicEnvFile(t *testing.T) {
 			"envfile": envPath,
 			"cluster": "${REGION}-cluster",
 		})),
-		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, v *Configurable) (Resolver, error) {
 			path := v.StringOr("envfile", "")
 			if path == "" {
 				return FromEnv(), nil
@@ -709,7 +709,7 @@ func TestWithEnvSubstFunc_DynamicEnvFile_OSEnvTakesPriority(t *testing.T) {
 			"envfile": envPath,
 			"cluster": "${REGION}-cluster",
 		})),
-		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, v *Configurable) (Resolver, error) {
 			envFile, err := FromEnvFile(v.StringOr("envfile", ""))
 			if err != nil {
 				return nil, err
@@ -736,7 +736,7 @@ func TestWithEnvSubstFunc_ReceivesCurrentValues(t *testing.T) {
 			"env":  "production",
 			"host": "${HOST}",
 		})),
-		WithEnvSubstFunc(func(v *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, v *Configurable) (Resolver, error) {
 			gotValues = v.Raw()
 			return FromMap(map[string]string{"HOST": "api.example.com"}), nil
 		}),
@@ -775,7 +775,7 @@ func TestWithEnvSubstFunc_ErrorWrappedAsConfigError(t *testing.T) {
 		WithSource(source.NewMap(map[string]any{
 			"val": "${X}",
 		})),
-		WithEnvSubstFunc(func(_ *Values) (Resolver, error) {
+		WithEnvSubstFunc(func(_ context.Context, _ *Configurable) (Resolver, error) {
 			return nil, fmt.Errorf("setup: %w", errors.New("connection refused"))
 		}),
 	)

@@ -34,11 +34,11 @@ func buildCfg(t *testing.T, yamlContent []byte, vars map[string]string) (*synthr
 	}
 	return synthra.New(
 		synthra.WithFileFS(fsys, "manifest.yaml"),
-		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ context.Context, _ *synthra.Configurable) ([]byte, error) {
 			return environmentsSchema, nil
 		}),
 		synthra.WithEnvSubst(synthra.FromMap(vars)),
-		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ context.Context, _ *synthra.Configurable) ([]byte, error) {
 			return manifestSchema, nil
 		}),
 	)

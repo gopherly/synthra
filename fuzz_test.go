@@ -193,7 +193,7 @@ func FuzzValidator(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, value string) {
 		src := source.NewMap(map[string]any{"key": value})
-		validator := func(r Reader) error {
+		validator := func(_ context.Context, r *Configuration) error {
 			s := r.StringOr("key", "")
 			if s == "" {
 				return errors.New("key cannot be empty")
@@ -342,10 +342,11 @@ func FuzzCanonicalizeSchemaKeys(f *testing.F) {
 	})
 }
 
-// FuzzValuesGetSetHas fuzzes Values.Get, Values.Set, and Values.Has with
+// FuzzConfigurableGetSetHas fuzzes Configurable.Get, Configurable.Set,
+// and Configurable.Has with
 // random paths, depths, and case mixes to catch panics and invariant
 // violations in the fold-match logic.
-func FuzzValuesGetSetHas(f *testing.F) {
+func FuzzConfigurableGetSetHas(f *testing.F) {
 	// Seed corpus: cover the most interesting structural cases.
 	f.Add("key", "value", "key")
 	f.Add("Key", "hello", "key")
@@ -369,7 +370,7 @@ func FuzzValuesGetSetHas(f *testing.F) {
 			t.Skip("empty segment in path — known findKeyFold sentinel collision")
 		}
 
-		v := newValues(map[string]any{})
+		v := newConfigurable(map[string]any{})
 
 		// Set must not panic.
 		setErr := v.Set(setPath, val)

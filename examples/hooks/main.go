@@ -74,7 +74,7 @@ func main() {
 		synthra.WithFile("config.yaml"),
 
 		// Map stage: force log level to "warn" in production before binding.
-		synthra.WithTransform(func(v *synthra.Values) error {
+		synthra.WithTransform(func(_ context.Context, v *synthra.Configurable) error {
 			if v.StringOr("env", "dev") == "prod" {
 				return v.Set("logging.level", "warn")
 			}
@@ -82,13 +82,13 @@ func main() {
 		}),
 
 		// Cross-field validation: TLS cert and key must both be present when TLS is on.
-		synthra.WithValidator(func(r synthra.Reader) error {
-			enabled := strings.EqualFold(fmt.Sprint(r.Get("server.tls.enabled")), "true")
+		synthra.WithValidator(func(_ context.Context, c *synthra.Configuration) error {
+			enabled := strings.EqualFold(fmt.Sprint(c.Get("server.tls.enabled")), "true")
 			if !enabled {
 				return nil
 			}
-			cert := strings.TrimSpace(r.StringOr("server.tls.cert.file", ""))
-			key := strings.TrimSpace(r.StringOr("server.tls.key.file", ""))
+			cert := strings.TrimSpace(c.StringOr("server.tls.cert.file", ""))
+			key := strings.TrimSpace(c.StringOr("server.tls.key.file", ""))
 			if cert == "" || key == "" {
 				return errors.New("server.tls.cert.file and server.tls.key.file are required when TLS is enabled")
 			}

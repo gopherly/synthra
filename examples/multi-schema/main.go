@@ -93,7 +93,7 @@ func main() {
 		// Step 1 — validate raw environments block before substitution.
 		// This schema requires "environments" to be present and structurally
 		// valid even before ${VAR} placeholders are expanded.
-		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ context.Context, _ *synthra.Configurable) ([]byte, error) {
 			return environmentsSchema, nil
 		}),
 
@@ -103,7 +103,7 @@ func main() {
 		// Step 3 — validate the fully-substituted manifest against the
 		// complete schema, which includes "service" (may have been a
 		// placeholder before substitution).
-		synthra.WithJSONSchemaFunc(func(_ *synthra.Values) ([]byte, error) {
+		synthra.WithJSONSchemaFunc(func(_ context.Context, _ *synthra.Configurable) ([]byte, error) {
 			return manifestSchema, nil
 		}),
 	)
@@ -134,17 +134,13 @@ func main() {
 
 	fmt.Printf("apiVersion=%s  service=%s  port=%d\n", apiVersion, service, port)
 
-	// Print environments
-	envs, ok := cfg.Get("environments").([]any)
-	if !ok {
+	// Print environments using EachMap so there is no .([]any) / .(map[string]any) ladder.
+	c := cfg.Configuration()
+	if c.SliceLen("environments") == 0 {
 		fmt.Println("environments: (none)")
 		return
 	}
-	for i, e := range envs {
-		envMap, isMap := e.(map[string]any)
-		if !isMap {
-			continue
-		}
-		fmt.Printf("environments[%d]: name=%v  envFile=%v\n", i, envMap["name"], envMap["envfile"])
+	for i, e := range c.EachMap("environments") {
+		fmt.Printf("environments[%d]: name=%v  envFile=%v\n", i, e.StringOr("name", ""), e.StringOr("envfile", ""))
 	}
 }

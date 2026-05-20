@@ -14,13 +14,18 @@
 
 package synthra
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // step is the internal interface for a single pipeline stage. Every entry in
 // Synthra.steps implements this interface. Steps are executed in the order
-// they were registered, after all sources are merged.
+// they were registered, after all sources are merged. The ctx passed to run
+// is the same context passed to [Synthra.Load], enabling cancellation,
+// timeouts, and tracing inside pipeline callbacks.
 type step interface {
-	run(values map[string]any) (map[string]any, error)
+	run(ctx context.Context, values map[string]any) (map[string]any, error)
 	// kind returns a short label used in error path strings ("schema",
 	// "transform", or "validator").
 	kind() string
@@ -31,13 +36,13 @@ type step interface {
 // selector each time Load runs, so the selector can inspect the current merged
 // values (for example to pick a schema based on an apiVersion field).
 type schemaStep struct {
-	selector func(map[string]any) ([]byte, error)
+	selector func(context.Context, map[string]any) ([]byte, error)
 }
 
 func (s *schemaStep) kind() string { return "schema" }
 
-func (s *schemaStep) run(values map[string]any) (map[string]any, error) {
-	schemaBytes, err := s.selector(values)
+func (s *schemaStep) run(ctx context.Context, values map[string]any) (map[string]any, error) {
+	schemaBytes, err := s.selector(ctx, values)
 	if err != nil {
 		return nil, err
 	}
@@ -56,24 +61,24 @@ func (s *schemaStep) run(values map[string]any) (map[string]any, error) {
 // transformStep applies an arbitrary map mutation to the values. The function
 // receives the current values and must return the (possibly modified) map.
 type transformStep struct {
-	fn func(map[string]any) (map[string]any, error)
+	fn func(context.Context, map[string]any) (map[string]any, error)
 }
 
 func (s *transformStep) kind() string { return "transform" }
 
-func (s *transformStep) run(values map[string]any) (map[string]any, error) {
-	return s.fn(values)
+func (s *transformStep) run(ctx context.Context, values map[string]any) (map[string]any, error) {
+	return s.fn(ctx, values)
 }
 
 // validatorStep runs a read-only check on values without modifying them.
 // Panics inside the validator function are recovered and converted into errors.
 type validatorStep struct {
-	fn func(map[string]any) error
+	fn func(context.Context, map[string]any) error
 }
 
 func (s *validatorStep) kind() string { return "validator" }
 
-func (s *validatorStep) run(values map[string]any) (result map[string]any, err error) {
+func (s *validatorStep) run(ctx context.Context, values map[string]any) (result map[string]any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if rerr, ok := r.(error); ok {
@@ -83,7 +88,7 @@ func (s *validatorStep) run(values map[string]any) (result map[string]any, err e
 			}
 		}
 	}()
-	if fnErr := s.fn(values); fnErr != nil {
+	if fnErr := s.fn(ctx, values); fnErr != nil {
 		return nil, fnErr
 	}
 	return values, nil

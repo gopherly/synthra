@@ -251,8 +251,8 @@ func ExampleWithValidator() {
 
 	cfg, err := synthra.New(
 		synthra.WithContent(yamlContent, codec.YAML),
-		synthra.WithValidator(func(r synthra.Reader) error {
-			if !r.Has("name") {
+		synthra.WithValidator(func(_ context.Context, c *synthra.Configuration) error {
+			if !c.Has("name") {
 				return fmt.Errorf("name is required")
 			}
 			return nil
