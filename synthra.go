@@ -114,7 +114,7 @@ func (cfg *config) build() *Synthra {
 //
 //	cfg, err := synthra.New(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvPrefix("APP"),
+//	    synthra.WithEnv("APP_"),
 //	    synthra.WithBinding(&appCfg),
 //	)
 //	if err != nil {
@@ -144,7 +144,7 @@ func New(opts ...Option) (*Synthra, error) {
 //
 //	cfg := synthra.MustNew(
 //	    synthra.WithFile("config.yaml"),
-//	    synthra.WithEnvPrefix("APP"),
+//	    synthra.WithEnv("APP_"),
 //	    synthra.WithBinding(&appCfg),
 //	)
 //	fmt.Println(cfg.Get("server.port"))

@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/consul/api"
+
 	"gopherly.dev/synthra/codec"
 )
 

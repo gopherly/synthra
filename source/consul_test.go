@@ -29,6 +29,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/modules/consul"
+
 	"gopherly.dev/synthra/codec"
 )
 

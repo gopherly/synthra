@@ -1110,6 +1110,6 @@ Contributions are welcome. Please open an issue first to discuss larger changes 
 
 This project uses Nix for development. Run `nix develop` to enter the shell, then:
 
-- `nix run .#lint` to run the linter.
+- `nix run .#lint` to run the linter and check formatting.
+- `nix run .#fmt` to auto-fix formatting.
 - `nix run .#test-unit` to run unit tests.
-- `nix run .#fmt-check` to check formatting.

@@ -316,7 +316,7 @@ linters:
 
     thelper:
       # *testing.T / *testing.B: require t.Helper() at start of helpers.
-      # testing.TB: nabattest.Run allows nil tb (examples); first stmt cannot be tb.Helper().
+      # testing.TB: example helpers may accept nil tb; first stmt cannot be tb.Helper().
       tb:
         begin: false
 
@@ -331,7 +331,7 @@ formatters:
   settings:
     gofumpt:
       # Module path for determining local imports
-      module-path: nabat.dev
+      module-path: gopherly.dev/synthra
       # Enable additional formatting rules beyond gofmt
       extra-rules: true
 
@@ -340,7 +340,7 @@ formatters:
       sections:
         - standard                    # Standard library packages
         - default                     # Third-party packages
-        - prefix(nabat.dev)           # All nabat.dev/* local modules
+        - prefix(gopherly.dev/synthra) # All gopherly.dev/synthra/* local modules
         - blank                       # Blank imports (side effects)
         - alias                       # Aliased imports
       custom-order: true

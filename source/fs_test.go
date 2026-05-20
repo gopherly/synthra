@@ -22,6 +22,7 @@ import (
 	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
+
 	"gopherly.dev/synthra/codec"
 )
 

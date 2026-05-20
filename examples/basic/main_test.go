@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
 	"gopherly.dev/synthra"
 )
 

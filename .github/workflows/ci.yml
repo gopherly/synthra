@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        check: [fmt-check, tidy, lint]
+        check: [tidy, lint]
     steps:
       - uses: actions/checkout@v6
 

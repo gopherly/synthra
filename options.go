@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/fluxcd/pkg/envsubst"
+
 	"gopherly.dev/synthra/codec"
 	"gopherly.dev/synthra/dumper"
 	"gopherly.dev/synthra/source"

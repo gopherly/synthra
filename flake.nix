@@ -84,7 +84,6 @@
         pre-commit-check = git-hooks.lib.${system}.run {
           src = ./.;
           hooks = {
-            gofmt.enable = true;
             # git-hooks' default env omits `go` on PATH; golangci-lint needs it.
             golangci-lint = {
               enable = true;
@@ -131,22 +130,9 @@
         apps = {
           fmt = mkApp {
             name = "fmt";
-            description = "Format all Go files with gofmt";
+            description = "Format Go files (gofumpt + gci via golangci-lint)";
             script = ''
-              exec ${pkgs.go}/bin/gofmt -w .
-            '';
-          };
-
-          fmt-check = mkApp {
-            name = "fmt-check";
-            description = "Fail if any Go file needs gofmt (lists paths)";
-            script = ''
-              out=$(${pkgs.go}/bin/gofmt -l .)
-              if [ -n "$out" ]; then
-                echo "::error::Unformatted Go files:" >&2
-                echo "$out" >&2
-                exit 1
-              fi
+              exec ${pkgs.golangci-lint}/bin/golangci-lint fmt ./...
             '';
           };
 

@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
 	"gopherly.dev/synthra"
 	"gopherly.dev/synthra/source"
 )

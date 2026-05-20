@@ -16,6 +16,7 @@ package synthra
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -150,8 +151,8 @@ func (s *Snapshot) Keys() []string {
 	return keys
 }
 
-// Raw returns the underlying map. The caller must not mutate it.
-func (s *Snapshot) Raw() map[string]any { return s.m }
+// Raw returns a shallow copy of the underlying map.
+func (s *Snapshot) Raw() map[string]any { return maps.Clone(s.m) }
 
 // String returns the value at path as a string.
 func (s *Snapshot) String(path string) (string, error) {
