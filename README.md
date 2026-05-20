@@ -5,10 +5,11 @@
 [![Go Reference](https://pkg.go.dev/badge/gopherly.dev/synthra.svg)](https://pkg.go.dev/gopherly.dev/synthra)
 [![Go Report Card](https://goreportcard.com/badge/gopherly.dev/synthra)](https://goreportcard.com/report/gopherly.dev/synthra)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![Slack](https://img.shields.io/badge/Slack-%23gopherly-4A154B?logo=slack)](https://slack.com/app_redirect?channel=C0B50TDEKN2)
 
 **From many sources, one config.**
 
-Synthra is a Go library that builds one configuration from many places. It reads from files, environment variables, Consul, in-memory bytes, and any custom source. It merges them in order, validates the result, and binds it to a struct if you want. The name comes from the Greek word *synthesis*, which means "to put together."
+Synthra is a Go package that builds one configuration from many places. It reads from files, environment variables, Consul, in-memory bytes, and any custom source. It merges them in order, validates the result, and binds it to a struct if you want. The name comes from the Greek word *synthesis*, which means "to put together."
 
 ```bash
 go get gopherly.dev/synthra
@@ -1103,6 +1104,10 @@ go test ./examples/...
 ## License
 
 Synthra is released under the [Apache License 2.0](./LICENSE).
+
+## Community
+
+Join [#gopherly](https://slack.com/app_redirect?channel=C0B50TDEKN2) on the [Gophers Slack](https://invite.slack.golangbridge.org/) for discussion and updates.
 
 ## Contributing
 
