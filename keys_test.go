@@ -200,3 +200,19 @@ func TestCanonicalizeSchemaKeys_NonMapArrayItemsSkipped(t *testing.T) {
 	got := canonicalizeSchemaKeys(values, schema)
 	assert.Equal(t, []any{"alpha", "beta"}, got["tags"])
 }
+
+func TestCanonicalizeSchemaKeys_NonMapPropertySchemaSkipped(t *testing.T) {
+	t.Parallel()
+	// Property schema is a plain string instead of a map[string]any.
+	// propSchema stays nil so nested traversal is skipped, but key
+	// renaming still applies.
+	schema := map[string]any{
+		"properties": map[string]any{
+			"Name": "string", // not a map[string]any
+		},
+	}
+	values := map[string]any{"name": "bob"} // lowercase — should be renamed
+	got := canonicalizeSchemaKeys(values, schema)
+	assert.Equal(t, "bob", got["Name"])
+	assert.NotContains(t, got, "name")
+}

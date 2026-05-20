@@ -386,3 +386,241 @@ func TestValues_TypedAccessors_WrongType(t *testing.T) {
 	_, err = v.Bool("nested")
 	require.Error(t, err)
 }
+
+func TestValues_IntOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"port": 3000})
+	assert.Equal(t, 3000, v.IntOr("port", 9090))
+}
+
+func TestValues_Int64_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.Int64("missing")
+	require.Error(t, err)
+}
+
+func TestValues_Int64Or_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"n": int64(42)})
+	assert.Equal(t, int64(42), v.Int64Or("n", 0))
+}
+
+func TestValues_Int64Or_Default(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	assert.Equal(t, int64(99), v.Int64Or("missing", 99))
+}
+
+func TestValues_Float64_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.Float64("missing")
+	require.Error(t, err)
+}
+
+func TestValues_Float64Or_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"r": 0.25})
+	assert.InDelta(t, 0.25, v.Float64Or("r", 1.0), 0.0001)
+}
+
+func TestValues_Float64Or_Default(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	assert.InDelta(t, 1.5, v.Float64Or("missing", 1.5), 0.0001)
+}
+
+func TestValues_Bool_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.Bool("missing")
+	require.Error(t, err)
+}
+
+func TestValues_BoolOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"flag": false})
+	assert.False(t, v.BoolOr("flag", true))
+}
+
+func TestValues_Duration_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.Duration("missing")
+	require.Error(t, err)
+}
+
+func TestValues_DurationOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"ttl": "2m"})
+	assert.Equal(t, 2*time.Minute, v.DurationOr("ttl", time.Hour))
+}
+
+func TestValues_Time_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.Time("missing")
+	require.Error(t, err)
+}
+
+func TestValues_TimeOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"ts": "2023-06-15T10:00:00Z"})
+	def := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := v.TimeOr("ts", def)
+	assert.Equal(t, 2023, got.Year())
+}
+
+func TestValues_TimeOr_Default(t *testing.T) {
+	t.Parallel()
+	def := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	v := newValues(nil)
+	assert.Equal(t, def, v.TimeOr("missing", def))
+}
+
+func TestValues_StringSlice_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.StringSlice("missing")
+	require.Error(t, err)
+}
+
+func TestValues_StringSliceOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"tags": []any{"x", "y"}})
+	assert.Equal(t, []string{"x", "y"}, v.StringSliceOr("tags", nil))
+}
+
+func TestValues_StringSliceOr_Default(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	assert.Equal(t, []string{"a"}, v.StringSliceOr("missing", []string{"a"}))
+}
+
+func TestValues_IntSlice_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.IntSlice("missing")
+	require.Error(t, err)
+}
+
+func TestValues_IntSliceOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"ports": []any{80, 443}})
+	assert.Equal(t, []int{80, 443}, v.IntSliceOr("ports", nil))
+}
+
+func TestValues_IntSliceOr_Default(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	assert.Equal(t, []int{1, 2}, v.IntSliceOr("missing", []int{1, 2}))
+}
+
+func TestValues_StringMap_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"labels": map[string]any{"env": "prod"}})
+	got, err := v.StringMap("labels")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"env": "prod"}, got)
+}
+
+func TestValues_StringMap_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.StringMap("missing")
+	require.Error(t, err)
+}
+
+func TestValues_StringMapOr_Found(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"m": map[string]any{"a": "b"}})
+	assert.Equal(t, map[string]any{"a": "b"}, v.StringMapOr("m", nil))
+}
+
+func TestValues_StringMapOr_Default(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	def := map[string]any{"x": "y"}
+	assert.Equal(t, def, v.StringMapOr("missing", def))
+}
+
+func TestValues_StringMapString_Missing(t *testing.T) {
+	t.Parallel()
+	v := newValues(nil)
+	_, err := v.StringMapString("missing")
+	require.Error(t, err)
+}
+
+func TestValues_Has_LiteralDotKey(t *testing.T) {
+	t.Parallel()
+	// A key that literally contains a dot must be found by Has, exercising the
+	// top-level findKeyFold hit before dot-traversal is attempted.
+	v := newValues(map[string]any{"a.b": "literal"})
+	assert.True(t, v.Has("a.b"))
+}
+
+func TestValues_Has_NestedMissingIntermediate(t *testing.T) {
+	t.Parallel()
+	// Multi-segment path where the first intermediate segment does not exist
+	// at all, exercising the k=="" early-return inside the traversal loop.
+	v := newValues(map[string]any{"other": "val"})
+	assert.False(t, v.Has("nonexistent.sub"))
+}
+
+func TestValues_Has_NestedNonMapIntermediate(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"a": "scalar-not-map"})
+	assert.False(t, v.Has("a.b"))
+}
+
+func TestValues_Delete_NestedMissingIntermediate(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"other": "val"})
+	assert.False(t, v.Delete("missing.key"))
+}
+
+func TestValues_Delete_NestedMissingFinalKey(t *testing.T) {
+	t.Parallel()
+	// Intermediate map exists but the final key does not.
+	v := newValues(map[string]any{"db": map[string]any{"host": "localhost"}})
+	assert.False(t, v.Delete("db.nonexistent"))
+}
+
+func TestValues_Delete_NestedNonMapIntermediate(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"a": "scalar"})
+	assert.False(t, v.Delete("a.b"))
+}
+
+func TestValues_Walk_ReplacesSliceElement(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{"tags": []any{"old"}})
+	v.Walk(func(path string, val any) (any, bool) {
+		if path == "tags[0]" {
+			return "new", true
+		}
+		return nil, false
+	})
+	got, err := v.StringSlice("tags")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"new"}, got)
+}
+
+func TestValues_Walk_NestedSliceInSlice(t *testing.T) {
+	t.Parallel()
+	v := newValues(map[string]any{
+		"matrix": []any{
+			[]any{1, 2},
+			[]any{3, 4},
+		},
+	})
+	var paths []string
+	v.Walk(func(path string, _ any) (any, bool) {
+		paths = append(paths, path)
+		return nil, false
+	})
+	assert.Contains(t, paths, "matrix[0]")
+	assert.Contains(t, paths, "matrix[0][0]")
+	assert.Contains(t, paths, "matrix[1][1]")
+}

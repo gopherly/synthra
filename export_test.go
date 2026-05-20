@@ -26,3 +26,14 @@ func WithConsulFactory(f func(string, codec.Decoder, source.ConsulKV) (Source, e
 		cfg.consulFactory = f
 	}
 }
+
+// ApplyDefaults exposes applyDefaults for external tests.
+var ApplyDefaults = applyDefaults
+
+// StructHasDefaults exposes structHasDefaults for external tests.
+var StructHasDefaults = structHasDefaults
+
+// DecodeBindingInto exposes decodeBindingInto for external tests.
+func DecodeBindingInto(s *Synthra, target, values any) error {
+	return s.decodeBindingInto(target, values)
+}

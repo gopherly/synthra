@@ -3,6 +3,7 @@ package synthra_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -281,4 +282,56 @@ func TestDefaults_PointerToStructAlreadyPopulated(t *testing.T) {
 	require.NotNil(t, out.DB)
 	assert.Equal(t, "remotehost", out.DB.Host)
 	assert.Equal(t, 3306, out.DB.Port)
+}
+
+// TestSetDefaults_PointerToStructPropagatesError verifies that an error
+// returned by a recursive setDefaults call on a pointer-to-struct field is
+// propagated to the caller.
+func TestSetDefaults_PointerToStructPropagatesError(t *testing.T) {
+	t.Parallel()
+
+	type Inner struct {
+		Port int `default:"notanint"`
+	}
+	type Outer struct {
+		Inner *Inner
+	}
+
+	out := &Outer{}
+	err := synthra.ApplyDefaults(out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Port")
+}
+
+// TestScanDefaults_SkipsUnexportedFields verifies that unexported struct
+// fields are ignored during the default-tag scan.
+func TestScanDefaults_SkipsUnexportedFields(t *testing.T) {
+	t.Parallel()
+
+	// unexported field comes first so the !IsExported branch is exercised
+	// before the exported field terminates the scan early.
+	type S struct {
+		secret string `default:"ignored"` //nolint:unused // unexported — must be skipped
+		Name   string `default:"bob"`     // exported, has default
+	}
+
+	// StructHasDefaults must still return true (exported field carries
+	// a default tag); the unexported field must not cause a panic.
+	assert.True(t, synthra.StructHasDefaults(reflect.TypeFor[S]()))
+}
+
+// TestDecodeBindingInto_NilResultErrors verifies that passing nil as the
+// decode target causes decodeBindingInto to return a descriptive error.
+// This exercises the mapstructure.NewDecoder error path, which is otherwise
+// unreachable through the public API because WithBinding rejects nil targets
+// at New time.
+func TestDecodeBindingInto_NilResultErrors(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := synthra.New()
+	require.NoError(t, err)
+
+	err = synthra.DecodeBindingInto(cfg, nil, map[string]any{"x": 1})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create decoder")
 }
